@@ -553,6 +553,28 @@ def reset_job():
             pass
 
 
+def cleanup_uploads():
+    """တင်ထားတဲ့ video file တွေ ဖျက် + uploader ကို reset (VoxCPM reference audio ကို မထိ)"""
+    for p in st.session_state.get("up_paths", []):
+        try:
+            os.remove(p)
+        except Exception:  # noqa: BLE001
+            pass
+    st.session_state["up_paths"] = []
+    st.session_state["up_key"] = st.session_state.get("up_key", 0) + 1
+
+
+def cleanup_after_download():
+    """Download နှိပ်ပြီးတာနဲ့: script + uploaded video + work files ဖျက်။ (ရလဒ် video ကို download အတွက် ချန်)"""
+    wd = st.session_state.get("wd")
+    if wd and os.path.isdir(wd):
+        shutil.rmtree(wd, ignore_errors=True)
+    for k in ("wd", "units", "vdur", "manual", "apply_msg", "gem_paste"):
+        st.session_state.pop(k, None)
+    cleanup_uploads()
+    st.session_state["cleaned"] = True
+
+
 def save_upload(up):
     """Upload ကို /tmp ထဲ တစ်ခါပဲ သိမ်း (rerun တိုင်း ပြန်မရေး)"""
     key = hashlib.md5(f"{up.name}-{up.size}".encode()).hexdigest()[:12]
@@ -560,6 +582,9 @@ def save_upload(up):
     if not os.path.exists(path):
         with open(path, "wb") as f:
             f.write(up.getbuffer())
+    paths = st.session_state.setdefault("up_paths", [])
+    if path not in paths:
+        paths.append(path)
     return path
 
 
@@ -600,37 +625,30 @@ with st.expander("🎨 စာတန်း (PNG) + Neon", expanded=False):
     sub_size = c5.slider("စာအရွယ် (% of width)", 3.0, 12.0, 7.0, 0.5)
     sub_pos = c6.slider("နေရာ (0=အပေါ် 100=အောက်)", 0, 100, 90, 1)
     use_neon = st.toggle("Neon border", value=True)
-    c7, c8 = st.columns(2)
-    neon_th = c7.slider("Neon ထူ (px)", 4, 24, 10)
-    neon_speed = c8.slider("Neon မြန်နှုန်း", 0.1, 1.0, 0.4, 0.05)
-    c9, c10 = st.columns(2)
-    flip = c9.toggle("Flip (ဘယ်ညာပြောင်း)", value=False)
-    zoom = c10.slider("Zoom", 1.0, 1.25, 1.0, 0.01)
-    c11, c12, c13 = st.columns([2, 2, 2])
-    sub_color = c11.color_picker("စာအရောင်", "#FFFFFF")
-    box_op = c12.slider("နောက်ခံ မည်း", 0.0, 1.0, 0.8, 0.05)
-    sub_bold = c13.toggle("စာထူ", value=False)
-    layout_sel = st.radio("မြန်မာစာ layout", ["Raqm (shaping)", "Basic"], horizontal=True,
-                          help="စာလုံး ပုံစံမမှန်ရင် Basic ကို ပြောင်းကြည့်ပါ")
+    zoom = st.slider("Zoom", 1.0, 1.25, 1.0, 0.01)
     font_path = find_font()
-    if font_path:
-        st.caption(f"Font: {os.path.basename(font_path)}")
-    else:
+    if not font_path:
         st.warning("Myanmar font မတွေ့ပါ။ MyanmarPadaung.ttf ကို repo root မှာ ထည့်ပါ။")
     if not features.check("raqm"):
         st.warning("raqm မရှိလို့ မြန်မာစာ ပုံစံ မမှန်နိုင်ပါ (packages.txt ထဲ libraqm0 ပါစေ)")
 
 rate = f"{rate_n:+d}%"
+
+# ---- ပုံသေတန်ဖိုးများ (UI မှာ မပြ၊ နောက်ကွယ်မှာ အလုပ်လုပ်)
+neon_th = 10
+neon_speed = 0.4
+flip = True
 sub_style = {
-    "alpha": int(box_op * 255),
-    "color": tuple(int(sub_color.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4)),
-    "bold": 1 if sub_bold else 0,
-    "layout": "raqm" if layout_sel.startswith("Raqm") else "basic",
+    "alpha": int(0.8 * 255),          # နောက်ခံ မည်း
+    "color": (255, 255, 255),         # စာအဖြူ
+    "bold": 0,
+    "layout": "raqm",
 }
 proxy = secret("EDGE_TTS_PROXY") or None
 hf_token = secret("HF_TOKEN") or None
 
-up = st.file_uploader("Video ရွေးပါ", type=["mp4", "mov", "mkv", "webm", "m4v"])
+up = st.file_uploader("Video ရွေးပါ", type=["mp4", "mov", "mkv", "webm", "m4v"],
+                      key=f"vid_{st.session_state.get('up_key', 0)}")
 
 if up:
     try:
@@ -647,6 +665,7 @@ if up:
 # ====================================================================
 if st.button("1️⃣ စာသားထုတ်", type="primary", disabled=not up, use_container_width=True):
     reset_job()
+    st.session_state.pop("cleaned", None)
     wd = tempfile.mkdtemp(prefix="recap_")
     st.session_state["wd"] = wd
     src = os.path.join(wd, "src.mp4")
@@ -873,7 +892,11 @@ if st.session_state.get("result"):
         st.markdown("**⏱️ ဘယ်အပိုင်း ဘယ်လောက်ကြာလဲ**\n\n" + timing_table(_tt))
     st.download_button("⬇️ Download MP4", st.session_state["result"],
                        file_name="final_myanmar.mp4", mime="video/mp4",
-                       use_container_width=True)
+                       use_container_width=True, on_click=cleanup_after_download)
+    if st.session_state.get("cleaned"):
+        st.caption("🧹 Script နဲ့ တင်ထားတဲ့ video ကို ဖျက်ပြီးပါပြီ")
     if st.button("🗑️ အသစ်ပြန်စ", use_container_width=True):
         reset_job()
+        cleanup_uploads()
+        st.session_state.pop("cleaned", None)
         st.rerun()
