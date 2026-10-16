@@ -1,0 +1,5 @@
+streamlit>=1.40
+faster-whisper
+edge-tts
+google-genai
+pandas
