@@ -452,14 +452,47 @@ def make_preview(path, height, text, font_path, fs_pct, pos_y, neon_on, neon_th,
 
 
 # ====================================================================
+# Manual translate helpers (Gemini app မှာ copy-paste)
+# ====================================================================
+def build_prompt(units):
+    lines = "\n".join(f"[{i}] {u['src']}" for i, u in enumerate(units))
+    return (
+        "You are a Burmese (Myanmar) recap-video narrator. Translate every numbered line "
+        "below into natural spoken Burmese narration (storyteller style). Rules: do NOT "
+        "summarize, shorten or skip; do NOT move content between lines; keep character "
+        "names consistent across all lines; use ONLY Burmese script (Myanmar Unicode), "
+        "no English/Chinese letters. Output exactly one line per input line in the format "
+        "[number] Burmese text -- same numbers, no extra comments.\n\n" + lines
+    )
+
+
+def parse_numbered(text, n):
+    """'[3] စာသား' / '3. စာသား' / '3) စာသား' ပုံစံကို {id: text} ပြောင်း"""
+    got = {}
+    for line in text.splitlines():
+        line = line.strip().strip("*").strip()
+        m = re.match(r"^[\[\(#]?\s*(\d+)\s*[\]\)\.:\-–]?\s*(.+)$", line)
+        if m and int(m.group(1)) < n:
+            got[int(m.group(1))] = m.group(2).strip().strip("*").strip()
+    if not got:  # နံပါတ်မပါရင် စာကြောင်းအရေအတွက်ညီမှ အစဉ်လိုက်ယူ
+        plain = [l.strip() for l in text.splitlines() if l.strip()]
+        if len(plain) == n:
+            got = {i: plain[i] for i in range(n)}
+    return got
+
+
+# ====================================================================
 # Session helpers
 # ====================================================================
 def reset_job():
     wd = st.session_state.get("wd")
     if wd and os.path.isdir(wd):
         shutil.rmtree(wd, ignore_errors=True)
-    for k in ("wd", "units", "vdur", "result"):
-        st.session_state.pop(k, None)
+    for k in ("wd", "units", "vdur", "result", "manual", "apply_msg", "gem_paste"):
+        try:
+            st.session_state.pop(k, None)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def save_upload(up):
@@ -478,8 +511,19 @@ def save_upload(up):
 st.title("🎙️ Recap → Myanmar")
 st.caption("Whisper → Gemini → Edge TTS / VoxCPM → Smart Sync → PNG စာတန်း + Neon border")
 
-with st.expander("⚙️ Settings", expanded=not secret("GEMINI_API_KEY")):
-    api_key = st.text_input("Gemini API key", type="password", value=secret("GEMINI_API_KEY"))
+# ---- ဘာသာပြန်နည်း (Manual / Auto) : ပင်မစာမျက်နှာမှာ ထင်ရှားစွာ ----
+mode = st.radio(
+    "ဘာသာပြန်နည်း",
+    ["✋ Manual (Gemini app မှာ copy-paste · key မလို)", "🤖 Auto (Gemini API key)"],
+    index=1 if secret("GEMINI_API_KEY") else 0,
+    horizontal=True)
+use_auto = mode.startswith("🤖")
+api_key = ""
+if use_auto:
+    api_key = st.text_input("Gemini API key", type="password",
+                            value=secret("GEMINI_API_KEY"))
+
+with st.expander("⚙️ Settings", expanded=False):
     c1, c2 = st.columns(2)
     src_lang = c1.selectbox("မူရင်းဘာသာ", ["auto", "en", "zh", "ko", "ja", "hi", "th", "vi", "id"])
     wsize = c2.selectbox("Whisper model", ["tiny", "base", "small"], index=1,
@@ -487,7 +531,7 @@ with st.expander("⚙️ Settings", expanded=not secret("GEMINI_API_KEY")):
     c3, c4 = st.columns(2)
     height = c3.select_slider("Output height", [360, 480, 720, 1080], value=720)
     max_speed = c4.slider("ရုပ် အမြန်ဆုံး ဆ", 1.0, 2.0, 1.25, 0.05)
-    models_txt = st.text_input("Gemini models (comma ခြား)", DEFAULT_MODELS)
+    models_txt = st.text_input("Gemini models (Auto မှာသာ)", DEFAULT_MODELS)
     max_min = st.slider("Video အရှည် ကန့်သတ် (မိနစ်)", 1, 15, 6)
 
 with st.expander("🔊 အသံ (Voice)", expanded=False):
@@ -553,8 +597,8 @@ if up:
 # ====================================================================
 # Stage 1 : Whisper + Gemini
 # ====================================================================
-if st.button("1️⃣ စာသားထုတ် + မြန်မာပြန်", type="primary",
-             disabled=not (up and api_key), use_container_width=True):
+if st.button("1️⃣ စာသားထုတ်" + (" + မြန်မာပြန်" if use_auto else ""), type="primary",
+             disabled=not (up and (api_key or not use_auto)), use_container_width=True):
     reset_job()
     wd = tempfile.mkdtemp(prefix="recap_")
     st.session_state["wd"] = wd
@@ -598,48 +642,52 @@ if st.button("1️⃣ စာသားထုတ် + မြန်မာပြန�
                 st.stop()
             stt.update(label=f"🎧 အပိုင်း {len(units)} ခု ရပြီ", state="complete")
 
-        gen = make_gen(api_key, models)
-        with st.status("🌐 Gemini ဘာသာပြန်နေတယ်...", expanded=True) as gst:
-            full = " ".join(u[2] for u in units)
-            context = gen(
-                "Read this story transcript (any language). List main character names, "
-                "relationships, places and key terms in a short English bullet list.\n\n"
-                + full[:60000], json_out=False)
-            sysmsg = (
-                "You are a Burmese (Myanmar) recap-video narrator. Input units may be in "
-                "Chinese, English or another language. Translate each unit into natural "
-                "spoken Burmese narration. Rules: do NOT summarize or shorten, do NOT skip, "
-                "do NOT move content between units, keep character names consistent, use "
-                "ONLY Burmese script (no other scripts).\nStory notes:\n" + context +
-                '\nInput is a JSON list of {"id":n,"text":"..."}. Return ONLY a JSON list '
-                'of {"id":n,"my":"..."} with the same ids.'
-            )
-            my = {}
-            bar = st.progress(0.0)
-            for b in range(0, len(units), BATCH):
-                items = [{"id": i, "text": units[i][2]}
-                         for i in range(b, min(b + BATCH, len(units)))]
-                for _ in range(3):
-                    try:
-                        out = json.loads(gen(sysmsg + "\n\n" + json.dumps(items, ensure_ascii=False)))
-                        for o in out:
-                            my[int(o["id"])] = clean_my(o["my"])
-                        if all(my.get(it["id"]) for it in items):
-                            break
-                    except Exception:  # noqa: BLE001
-                        pass
-                bar.progress(min((b + BATCH) / len(units), 1.0))
-            for i in range(len(units)):
-                if not my.get(i):
-                    my[i] = clean_my(gen(
-                        "Translate to natural spoken Burmese narration only, no notes:\n"
-                        + units[i][2], json_out=False))
-            gst.update(label="🌐 ဘာသာပြန်ပြီး", state="complete")
+        my = {}
+        if use_auto:
+            gen = make_gen(api_key, models)
+            with st.status("🌐 Gemini ဘာသာပြန်နေတယ်...", expanded=True) as gst:
+                full = " ".join(u[2] for u in units)
+                context = gen(
+                    "Read this story transcript (any language). List main character names, "
+                    "relationships, places and key terms in a short English bullet list.\n\n"
+                    + full[:60000], json_out=False)
+                sysmsg = (
+                    "You are a Burmese (Myanmar) recap-video narrator. Input units may be in "
+                    "Chinese, English or another language. Translate each unit into natural "
+                    "spoken Burmese narration. Rules: do NOT summarize or shorten, do NOT skip, "
+                    "do NOT move content between units, keep character names consistent, use "
+                    "ONLY Burmese script (no other scripts).\nStory notes:\n" + context +
+                    '\nInput is a JSON list of {"id":n,"text":"..."}. Return ONLY a JSON list '
+                    'of {"id":n,"my":"..."} with the same ids.'
+                )
+                my = {}
+                bar = st.progress(0.0)
+                for b in range(0, len(units), BATCH):
+                    items = [{"id": i, "text": units[i][2]}
+                             for i in range(b, min(b + BATCH, len(units)))]
+                    for _ in range(3):
+                        try:
+                            out = json.loads(gen(sysmsg + "\n\n" + json.dumps(items, ensure_ascii=False)))
+                            for o in out:
+                                my[int(o["id"])] = clean_my(o["my"])
+                            if all(my.get(it["id"]) for it in items):
+                                break
+                        except Exception:  # noqa: BLE001
+                            pass
+                    bar.progress(min((b + BATCH) / len(units), 1.0))
+                for i in range(len(units)):
+                    if not my.get(i):
+                        my[i] = clean_my(gen(
+                            "Translate to natural spoken Burmese narration only, no notes:\n"
+                            + units[i][2], json_out=False))
+                gst.update(label="🌐 ဘာသာပြန်ပြီး", state="complete")
 
         st.session_state["units"] = [
-            {"start": units[i][0], "end": units[i][1], "src": units[i][2], "my": my[i]}
+            {"start": units[i][0], "end": units[i][1], "src": units[i][2], "my": my.get(i, "")}
             for i in range(len(units))
         ]
+        st.session_state["manual"] = not use_auto
+        st.session_state["ver"] = st.session_state.get("ver", 0) + 1
     except Exception as ex:  # noqa: BLE001
         st.error(f"Error: {ex}")
 
@@ -648,18 +696,43 @@ if st.button("1️⃣ စာသားထုတ် + မြန်မာပြန�
 # ====================================================================
 if st.session_state.get("units"):
     units = st.session_state["units"]
+
+    if st.session_state.get("manual"):
+        st.subheader("📋 Gemini မှာ ဘာသာပြန်ရန်")
+        st.caption("① အောက်က စာသားကို Copy (ညာထောင့် icon) → ② Gemini app မှာ paste → "
+                   "③ ရလဒ်ကို အောက်က ကွက်ထဲ paste → ④ Apply")
+        st.code(build_prompt(units), language=None)
+        pasted = st.text_area("Gemini ရလဒ် ဒီမှာ paste", height=200, key="gem_paste",
+                              placeholder="[0] မြန်မာစာ...\n[1] မြန်မာစာ...")
+        if st.button("✅ Apply (စာသား ဖြည့်)", use_container_width=True):
+            got = parse_numbered(pasted, len(units))
+            for i, t in got.items():
+                units[i]["my"] = clean_my(t)
+            missing = [i for i in range(len(units)) if not units[i]["my"]]
+            st.session_state["apply_msg"] = (
+                f"ဖြည့်ပြီး {len(got)}/{len(units)} ကြောင်း"
+                + (f" · မပါသေးတာ: {missing[:15]}" if missing else " ✅"))
+            st.session_state["ver"] = st.session_state.get("ver", 0) + 1
+            st.rerun()
+        if st.session_state.get("apply_msg"):
+            st.info(st.session_state["apply_msg"])
+
     st.subheader("✏️ မြန်မာစာသား စစ်/ပြင်")
     df = pd.DataFrame({"#": range(len(units)),
                        "မူရင်း": [u["src"] for u in units],
                        "မြန်မာ": [u["my"] for u in units]})
     edited = st.data_editor(df, disabled=["#", "မူရင်း"], hide_index=True,
-                            use_container_width=True, key="editor")
+                            use_container_width=True, key=f"editor_{st.session_state.get('ver', 0)}")
 
     if st.button("2️⃣ အသံထုတ် + Video ပေါင်း", type="primary", use_container_width=True):
         wd, vdur = st.session_state["wd"], st.session_state["vdur"]
         src = os.path.join(wd, "src.mp4")
         my_list = [clean_my(str(t)) or units[i]["my"] for i, t in enumerate(edited["မြန်မာ"])]
         n = len(units)
+        empty = [i for i, t in enumerate(my_list) if not t.strip()]
+        if empty:
+            st.error(f"မြန်မာစာသား မဖြည့်ရသေးတဲ့ စာကြောင်း: {empty[:20]}")
+            st.stop()
         try:
             # ---------------- TTS
             vox = None
