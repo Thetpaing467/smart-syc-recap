@@ -639,9 +639,8 @@ if st.session_state.get("units"):
 
     st.subheader("✏️ မြန်မာစာသား စစ်/ပြင်")
     df = pd.DataFrame({"#": range(len(units)),
-                       "မူရင်း": [u["src"] for u in units],
                        "မြန်မာ": [u["my"] for u in units]})
-    edited = st.data_editor(df, disabled=["#", "မူရင်း"], hide_index=True,
+    edited = st.data_editor(df, disabled=["#"], hide_index=True,
                             use_container_width=True, key=f"editor_{st.session_state.get('ver', 0)}")
 
     if st.button("2️⃣ အသံထုတ် + Video ပေါင်း", type="primary", use_container_width=True):
