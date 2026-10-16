@@ -637,16 +637,10 @@ if st.session_state.get("units"):
         if st.session_state.get("apply_msg"):
             st.info(st.session_state["apply_msg"])
 
-    st.subheader("✏️ မြန်မာစာသား စစ်/ပြင်")
-    df = pd.DataFrame({"#": range(len(units)),
-                       "မြန်မာ": [u["my"] for u in units]})
-    edited = st.data_editor(df, disabled=["#"], hide_index=True,
-                            use_container_width=True, key=f"editor_{st.session_state.get('ver', 0)}")
-
     if st.button("2️⃣ အသံထုတ် + Video ပေါင်း", type="primary", use_container_width=True):
         wd, vdur = st.session_state["wd"], st.session_state["vdur"]
         src = os.path.join(wd, "src.mp4")
-        my_list = [clean_my(str(t)) or units[i]["my"] for i, t in enumerate(edited["မြန်မာ"])]
+        my_list = [clean_my(u["my"]) for u in units]
         n = len(units)
         empty = [i for i, t in enumerate(my_list) if not t.strip()]
         if empty:
