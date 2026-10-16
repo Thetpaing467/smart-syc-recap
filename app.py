@@ -428,8 +428,8 @@ def render_final(src, audio, out, plan, total, height, subs, font_path, fs_pct, 
     log = open(log_path, "wb")
     cmd = ["ffmpeg", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{W}x{H}",
            "-r", str(fps_out), "-i", "-", "-i", audio, "-map", "0:v", "-map", "1:a:0",
-           "-c:v", "libx264", "-preset", preset, "-crf", "23", "-pix_fmt", "yuv420p",
-           "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart",
+           "-c:v", "libx264", "-preset", preset, "-crf", "27", "-pix_fmt", "yuv420p",
+           "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart",
            "-t", f"{total:.3f}", out]
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=log)
     th = threading.Thread(target=producer, daemon=True)
@@ -884,7 +884,10 @@ if st.session_state.get("units"):
 # ====================================================================
 if st.session_state.get("result"):
     st.subheader("✅ ရလဒ်")
-    st.video(st.session_state["result"])
+    mb = len(st.session_state["result"]) / 1e6
+    st.caption(f"📦 File အရွယ်အစား: {mb:.1f} MB")
+    if st.toggle("▶️ ဒီမှာ video ကြည့်မယ် (ဖိုင်ကြီးရင်/net နှေးရင် ကြာတတ်)", value=False, key="show_vid"):
+        st.video(st.session_state["result"])
     _tt = {}
     _tt.update(st.session_state.get("t1") or {})
     _tt.update(st.session_state.get("t2") or {})
