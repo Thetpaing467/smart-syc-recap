@@ -1,1 +1,3 @@
 ffmpeg
+libraqm0
+fonts-sil-padauk
