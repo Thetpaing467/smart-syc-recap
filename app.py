@@ -196,11 +196,12 @@ def find_font():
 _FONT_CACHE = {}
 
 
-def get_font(path, size):
-    key = (path, size)
+def get_font(path, size, layout="raqm"):
+    key = (path, size, layout)
     if key not in _FONT_CACHE:
         try:
-            eng = ImageFont.Layout.RAQM if features.check("raqm") else ImageFont.Layout.BASIC
+            use_raqm = layout == "raqm" and features.check("raqm")
+            eng = ImageFont.Layout.RAQM if use_raqm else ImageFont.Layout.BASIC
             _FONT_CACHE[key] = ImageFont.truetype(path, size, layout_engine=eng)
         except Exception:  # noqa: BLE001
             try:
@@ -271,36 +272,36 @@ def split_for_sub(text, mc=36):
     return parts or [text]
 
 
-def build_overlay(text, W, H, font_path, fs, pos_y, alpha=200, color=(255, 255, 255), bold=1):
-    """စာတန်း PNG (RGBA) တစ်ခုထုတ်ပြီး ဖြတ်ယူထားတဲ့ premultiplied BGR + inv-alpha ပြန်"""
-    font = get_font(font_path, fs)
+def build_overlay(text, W, H, font_path, fs, pos_y, alpha=200, color=(255, 255, 255),
+                  bold=0, layout="raqm"):
+    """စာတန်း PNG (RGBA): အနက်ရောင် rounded box (အကျယ်အပြည့်) + ဖြူစာ + အနက်အနားသတ်"""
+    font = get_font(font_path, fs, layout)
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
 
-    pad_x, pad_y = int(fs * 0.7), int(fs * 0.45)
-    lines = wrap_text(text, font, int(W * 0.92) - 2 * pad_x)
+    pad_x, pad_y = int(fs * 0.6), int(fs * 0.5)
+    lines = wrap_text(text, font, W - 2 * pad_x)
     if not lines:
         return None
-    lh = int(fs * 1.5)
-    widths = [font.getlength(l) for l in lines]
-    box_w = int(min(W, max(widths) + 2 * pad_x))
+    lh = int(fs * 1.4)
+    box_w = W
     box_h = len(lines) * lh + 2 * pad_y
-    box_x = (W - box_w) // 2
+    box_x = 0
     max_y = max(0, H - box_h)
     box_y = max(0, min(int(pos_y / 100 * max_y), max_y))
 
     d.rounded_rectangle([box_x, box_y, box_x + box_w, box_y + box_h],
-                        radius=int(fs * 0.6), fill=(0, 0, 0, alpha))
-    ty = box_y + pad_y
-    sw = max(2, fs // 12)
+                        radius=int(fs * 0.66), fill=(0, 0, 0, alpha))
     ink = (int(color[0]), int(color[1]), int(color[2]), 255)
-    for ln, lw in zip(lines, widths):
+    sw = max(1, round(fs / 15))
+    ty = box_y + pad_y
+    for ln in lines:
+        lw = font.getlength(ln)
         lx = box_x + (box_w - lw) / 2
-        # အနက်ရောင် အနားသတ် (ထူ) ပြီးမှ အရောင်စာ ထပ်ရေး → ထင်ရှားပြီး မမှိန်
         d.text((lx, ty), ln, font=font, fill=(0, 0, 0, 255),
-               stroke_width=sw + bold, stroke_fill=(0, 0, 0, 255))
+               stroke_width=sw, stroke_fill=(0, 0, 0, 255))
         d.text((lx, ty), ln, font=font, fill=ink,
-               stroke_width=bold, stroke_fill=ink)
+               stroke_width=1 if bold else 0, stroke_fill=ink)
         ty += lh
 
     arr = np.array(img)
@@ -484,7 +485,7 @@ with st.expander("⚙️ Settings", expanded=not secret("GEMINI_API_KEY")):
     wsize = c2.selectbox("Whisper model", ["tiny", "base", "small"], index=1,
                          help="small = တိကျ/နှေး၊ tiny = မြန်/အမှားများ")
     c3, c4 = st.columns(2)
-    height = c3.select_slider("Output height", [360, 480, 720, 1080], value=480)
+    height = c3.select_slider("Output height", [360, 480, 720, 1080], value=720)
     max_speed = c4.slider("ရုပ် အမြန်ဆုံး ဆ", 1.0, 2.0, 1.25, 0.05)
     models_txt = st.text_input("Gemini models (comma ခြား)", DEFAULT_MODELS)
     max_min = st.slider("Video အရှည် ကန့်သတ် (မိနစ်)", 1, 15, 6)
@@ -503,7 +504,7 @@ with st.expander("🔊 အသံ (Voice)", expanded=False):
 with st.expander("🎨 စာတန်း (PNG) + Neon", expanded=False):
     use_sub = st.toggle("PNG စာတန်းထည့်", value=True)
     c5, c6 = st.columns(2)
-    sub_size = c5.slider("စာအရွယ် (% of width)", 3.0, 10.0, 6.0, 0.5)
+    sub_size = c5.slider("စာအရွယ် (% of width)", 3.0, 12.0, 7.0, 0.5)
     sub_pos = c6.slider("နေရာ (0=အပေါ် 100=အောက်)", 0, 100, 90, 1)
     use_neon = st.toggle("Neon border", value=True)
     c7, c8 = st.columns(2)
@@ -515,7 +516,9 @@ with st.expander("🎨 စာတန်း (PNG) + Neon", expanded=False):
     c11, c12, c13 = st.columns([2, 2, 2])
     sub_color = c11.color_picker("စာအရောင်", "#FFFFFF")
     box_op = c12.slider("နောက်ခံ မည်း", 0.0, 1.0, 0.8, 0.05)
-    sub_bold = c13.toggle("စာထူ", value=True)
+    sub_bold = c13.toggle("စာထူ", value=False)
+    layout_sel = st.radio("မြန်မာစာ layout", ["Raqm (shaping)", "Basic"], horizontal=True,
+                          help="စာလုံး ပုံစံမမှန်ရင် Basic ကို ပြောင်းကြည့်ပါ")
     font_path = find_font()
     if font_path:
         st.caption(f"Font: {os.path.basename(font_path)}")
@@ -529,6 +532,7 @@ sub_style = {
     "alpha": int(box_op * 255),
     "color": tuple(int(sub_color.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4)),
     "bold": 1 if sub_bold else 0,
+    "layout": "raqm" if layout_sel.startswith("Raqm") else "basic",
 }
 models = [m.strip() for m in models_txt.split(",") if m.strip()]
 proxy = secret("EDGE_TTS_PROXY") or None
@@ -539,7 +543,7 @@ up = st.file_uploader("Video ရွေးပါ", type=["mp4", "mov", "mkv", "we
 if up:
     try:
         up_path = save_upload(up)
-        pv = make_preview(up_path, 480, "စာတန်းထိုး နမူနာ စာသား ဖြစ်ပါတယ်။", font_path,
+        pv = make_preview(up_path, height, "စာတန်းထိုး နမူနာ စာသား ဖြစ်ပါတယ်။", font_path,
                           sub_size, sub_pos, use_neon, neon_th, neon_speed, flip, zoom, sub_style)
         if pv is not None:
             st.image(pv, caption="Preview", use_container_width=True)
