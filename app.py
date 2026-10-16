@@ -174,10 +174,7 @@ class VoxEngine:
 # Subtitle PNG (Pillow) helpers
 # ====================================================================
 def find_font():
-    """Myanmar font ရှာ: custom upload → repo ထဲက .ttf → system (Padauk/Noto Myanmar)"""
-    custom = "/tmp/custom_font.ttf"
-    if os.path.exists(custom):
-        return custom
+    """Myanmar font ရှာ: repo ထဲက MyanmarPadaung.ttf → တခြား .ttf → system (Padauk/Noto Myanmar)"""
     here = os.path.dirname(os.path.abspath(__file__))
     for name in ("MyanmarPadaung.ttf", "fonts/MyanmarPadaung.ttf"):
         pref = os.path.join(here, name)
@@ -274,7 +271,7 @@ def split_for_sub(text, mc=36):
     return parts or [text]
 
 
-def build_overlay(text, W, H, font_path, fs, pos_y, alpha=190):
+def build_overlay(text, W, H, font_path, fs, pos_y, alpha=200, color=(255, 255, 255), bold=1):
     """စာတန်း PNG (RGBA) တစ်ခုထုတ်ပြီး ဖြတ်ယူထားတဲ့ premultiplied BGR + inv-alpha ပြန်"""
     font = get_font(font_path, fs)
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
@@ -295,11 +292,15 @@ def build_overlay(text, W, H, font_path, fs, pos_y, alpha=190):
     d.rounded_rectangle([box_x, box_y, box_x + box_w, box_y + box_h],
                         radius=int(fs * 0.6), fill=(0, 0, 0, alpha))
     ty = box_y + pad_y
-    sw = max(1, fs // 14)
+    sw = max(2, fs // 12)
+    ink = (int(color[0]), int(color[1]), int(color[2]), 255)
     for ln, lw in zip(lines, widths):
         lx = box_x + (box_w - lw) / 2
-        d.text((lx, ty), ln, font=font, fill=(255, 255, 255, 255),
-               stroke_width=sw, stroke_fill=(0, 0, 0, 255))
+        # အနက်ရောင် အနားသတ် (ထူ) ပြီးမှ အရောင်စာ ထပ်ရေး → ထင်ရှားပြီး မမှိန်
+        d.text((lx, ty), ln, font=font, fill=(0, 0, 0, 255),
+               stroke_width=sw + bold, stroke_fill=(0, 0, 0, 255))
+        d.text((lx, ty), ln, font=font, fill=ink,
+               stroke_width=bold, stroke_fill=ink)
         ty += lh
 
     arr = np.array(img)
@@ -371,8 +372,9 @@ def zoom_flip(fr, zoom, flip):
 
 
 def overlay_pass(src, out, subs, font_path, fs_pct, pos_y, neon_on, neon_th,
-                 neon_speed, flip, zoom, progress=None):
+                 neon_speed, flip, zoom, style=None, progress=None):
     """Smart-Sync video ကို frame တစ်ခုချင်းဖတ်ပြီး neon + PNG subtitle ထည့်၊ audio ပြန်ပေါင်း"""
+    style = style or {}
     cap = cv2.VideoCapture(src)
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     W, H = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -401,7 +403,7 @@ def overlay_pass(src, out, subs, font_path, fs_pct, pos_y, neon_on, neon_th,
                     k += 1
                 if k < len(subs) and subs[k][0] <= t:
                     if cur_k != k:
-                        cur_ov = build_overlay(subs[k][2], W, H, font_path, fs, pos_y)
+                        cur_ov = build_overlay(subs[k][2], W, H, font_path, fs, pos_y, **style)
                         cur_k = k
                     if cur_ov:
                         blend_overlay(fr, cur_ov)
@@ -424,7 +426,7 @@ def overlay_pass(src, out, subs, font_path, fs_pct, pos_y, neon_on, neon_th,
 
 
 def make_preview(path, height, text, font_path, fs_pct, pos_y, neon_on, neon_th,
-                 neon_speed, flip, zoom):
+                 neon_speed, flip, zoom, style=None):
     cap = cv2.VideoCapture(path)
     cap.set(cv2.CAP_PROP_POS_MSEC, 1000)
     ok, fr = cap.read()
@@ -442,7 +444,7 @@ def make_preview(path, height, text, font_path, fs_pct, pos_y, neon_on, neon_th,
     if neon_on:
         Neon(W, H, neon_th, neon_speed).apply(fr, 1.0)
     if font_path:
-        ov = build_overlay(text, W, H, font_path, max(16, int(W * fs_pct / 100)), pos_y)
+        ov = build_overlay(text, W, H, font_path, max(16, int(W * fs_pct / 100)), pos_y, **(style or {}))
         if ov:
             blend_overlay(fr, ov)
     return cv2.cvtColor(fr, cv2.COLOR_BGR2RGB)
@@ -501,7 +503,7 @@ with st.expander("🔊 အသံ (Voice)", expanded=False):
 with st.expander("🎨 စာတန်း (PNG) + Neon", expanded=False):
     use_sub = st.toggle("PNG စာတန်းထည့်", value=True)
     c5, c6 = st.columns(2)
-    sub_size = c5.slider("စာအရွယ် (% of width)", 3.0, 9.0, 5.0, 0.5)
+    sub_size = c5.slider("စာအရွယ် (% of width)", 3.0, 10.0, 6.0, 0.5)
     sub_pos = c6.slider("နေရာ (0=အပေါ် 100=အောက်)", 0, 100, 90, 1)
     use_neon = st.toggle("Neon border", value=True)
     c7, c8 = st.columns(2)
@@ -510,19 +512,24 @@ with st.expander("🎨 စာတန်း (PNG) + Neon", expanded=False):
     c9, c10 = st.columns(2)
     flip = c9.toggle("Flip (ဘယ်ညာပြောင်း)", value=False)
     zoom = c10.slider("Zoom", 1.0, 1.25, 1.0, 0.01)
-    font_up = st.file_uploader("Myanmar font (.ttf) — ရှိရင်သာ", type=["ttf", "otf"])
-    if font_up:
-        with open("/tmp/custom_font.ttf", "wb") as f:
-            f.write(font_up.getbuffer())
+    c11, c12, c13 = st.columns([2, 2, 2])
+    sub_color = c11.color_picker("စာအရောင်", "#FFFFFF")
+    box_op = c12.slider("နောက်ခံ မည်း", 0.0, 1.0, 0.8, 0.05)
+    sub_bold = c13.toggle("စာထူ", value=True)
     font_path = find_font()
     if font_path:
         st.caption(f"Font: {os.path.basename(font_path)}")
     else:
-        st.warning("Myanmar font မတွေ့ပါ။ .ttf တင်ပါ (သို့) repo ထဲ ထည့်ပါ။")
+        st.warning("Myanmar font မတွေ့ပါ။ MyanmarPadaung.ttf ကို repo root မှာ ထည့်ပါ။")
     if not features.check("raqm"):
         st.warning("raqm မရှိလို့ မြန်မာစာ ပုံစံ မမှန်နိုင်ပါ (packages.txt ထဲ libraqm0 ပါစေ)")
 
 rate = f"{rate_n:+d}%"
+sub_style = {
+    "alpha": int(box_op * 255),
+    "color": tuple(int(sub_color.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4)),
+    "bold": 1 if sub_bold else 0,
+}
 models = [m.strip() for m in models_txt.split(",") if m.strip()]
 proxy = secret("EDGE_TTS_PROXY") or None
 hf_token = secret("HF_TOKEN") or None
@@ -533,7 +540,7 @@ if up:
     try:
         up_path = save_upload(up)
         pv = make_preview(up_path, 480, "စာတန်းထိုး နမူနာ စာသား ဖြစ်ပါတယ်။", font_path,
-                          sub_size, sub_pos, use_neon, neon_th, neon_speed, flip, zoom)
+                          sub_size, sub_pos, use_neon, neon_th, neon_speed, flip, zoom, sub_style)
         if pv is not None:
             st.image(pv, caption="Preview", use_container_width=True)
     except Exception as ex:  # noqa: BLE001
@@ -749,7 +756,7 @@ if st.session_state.get("units"):
                     final = f"{wd}/final.mp4"
                     overlay_pass(synced, final, subs, font_path if use_sub else None,
                                  sub_size, sub_pos, use_neon, neon_th, neon_speed,
-                                 flip, zoom, progress=bar)
+                                 flip, zoom, sub_style, progress=bar)
                     ost.update(label="🖼️ စာတန်း/Neon ပြီး", state="complete")
 
             with open(final, "rb") as f:
