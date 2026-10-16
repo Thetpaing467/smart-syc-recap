@@ -18,11 +18,7 @@ from PIL import Image, ImageDraw, ImageFont, features
 
 st.set_page_config(page_title="Recap → Myanmar", page_icon="🎙️", layout="centered")
 
-DEFAULT_MODELS = (
-    "gemini-3.5-flash, gemini-3.5-flash-lite, gemini-3.6-flash, "
-    "gemini-3.7-flash, gemini-3.1-flash-lite"
-)
-TARGET, MAXD, BATCH = 4.2, 5.6, 40
+TARGET, MAXD = 4.2, 5.6
 
 VOX_SPACES = [
     {"space": "openbmb/VoxCPM-Demo", "type": "demo"},
@@ -70,27 +66,6 @@ def clean_my(text):
 def load_whisper(size):
     from faster_whisper import WhisperModel
     return WhisperModel(size, device="cpu", compute_type="int8")
-
-
-def make_gen(api_key, models):
-    from google import genai
-    client = genai.Client(api_key=api_key)
-
-    def gen(prompt, json_out=True):
-        last = None
-        for attempt in range(3):
-            for m in models:
-                try:
-                    cfg = {"response_mime_type": "application/json"} if json_out else None
-                    r = client.models.generate_content(model=m, contents=prompt, config=cfg)
-                    if r.text:
-                        return r.text
-                except Exception as ex:  # noqa: BLE001
-                    last = ex
-            time.sleep(4 * (attempt + 1))
-        raise RuntimeError(f"Gemini failed: {last}")
-
-    return gen
 
 
 # ====================================================================
@@ -511,18 +486,6 @@ def save_upload(up):
 st.title("🎙️ Recap → Myanmar")
 st.caption("Whisper → Gemini → Edge TTS / VoxCPM → Smart Sync → PNG စာတန်း + Neon border")
 
-# ---- ဘာသာပြန်နည်း (Manual / Auto) : ပင်မစာမျက်နှာမှာ ထင်ရှားစွာ ----
-mode = st.radio(
-    "ဘာသာပြန်နည်း",
-    ["✋ Manual (Gemini app မှာ copy-paste · key မလို)", "🤖 Auto (Gemini API key)"],
-    index=1 if secret("GEMINI_API_KEY") else 0,
-    horizontal=True)
-use_auto = mode.startswith("🤖")
-api_key = ""
-if use_auto:
-    api_key = st.text_input("Gemini API key", type="password",
-                            value=secret("GEMINI_API_KEY"))
-
 with st.expander("⚙️ Settings", expanded=False):
     c1, c2 = st.columns(2)
     src_lang = c1.selectbox("မူရင်းဘာသာ", ["auto", "en", "zh", "ko", "ja", "hi", "th", "vi", "id"])
@@ -531,7 +494,6 @@ with st.expander("⚙️ Settings", expanded=False):
     c3, c4 = st.columns(2)
     height = c3.select_slider("Output height", [360, 480, 720, 1080], value=720)
     max_speed = c4.slider("ရုပ် အမြန်ဆုံး ဆ", 1.0, 2.0, 1.25, 0.05)
-    models_txt = st.text_input("Gemini models (Auto မှာသာ)", DEFAULT_MODELS)
     max_min = st.slider("Video အရှည် ကန့်သတ် (မိနစ်)", 1, 15, 6)
 
 with st.expander("🔊 အသံ (Voice)", expanded=False):
@@ -578,7 +540,6 @@ sub_style = {
     "bold": 1 if sub_bold else 0,
     "layout": "raqm" if layout_sel.startswith("Raqm") else "basic",
 }
-models = [m.strip() for m in models_txt.split(",") if m.strip()]
 proxy = secret("EDGE_TTS_PROXY") or None
 hf_token = secret("HF_TOKEN") or None
 
@@ -597,8 +558,7 @@ if up:
 # ====================================================================
 # Stage 1 : Whisper + Gemini
 # ====================================================================
-if st.button("1️⃣ စာသားထုတ်" + (" + မြန်မာပြန်" if use_auto else ""), type="primary",
-             disabled=not (up and (api_key or not use_auto)), use_container_width=True):
+if st.button("1️⃣ စာသားထုတ်", type="primary", disabled=not up, use_container_width=True):
     reset_job()
     wd = tempfile.mkdtemp(prefix="recap_")
     st.session_state["wd"] = wd
@@ -642,51 +602,11 @@ if st.button("1️⃣ စာသားထုတ်" + (" + မြန်မာပ�
                 st.stop()
             stt.update(label=f"🎧 အပိုင်း {len(units)} ခု ရပြီ", state="complete")
 
-        my = {}
-        if use_auto:
-            gen = make_gen(api_key, models)
-            with st.status("🌐 Gemini ဘာသာပြန်နေတယ်...", expanded=True) as gst:
-                full = " ".join(u[2] for u in units)
-                context = gen(
-                    "Read this story transcript (any language). List main character names, "
-                    "relationships, places and key terms in a short English bullet list.\n\n"
-                    + full[:60000], json_out=False)
-                sysmsg = (
-                    "You are a Burmese (Myanmar) recap-video narrator. Input units may be in "
-                    "Chinese, English or another language. Translate each unit into natural "
-                    "spoken Burmese narration. Rules: do NOT summarize or shorten, do NOT skip, "
-                    "do NOT move content between units, keep character names consistent, use "
-                    "ONLY Burmese script (no other scripts).\nStory notes:\n" + context +
-                    '\nInput is a JSON list of {"id":n,"text":"..."}. Return ONLY a JSON list '
-                    'of {"id":n,"my":"..."} with the same ids.'
-                )
-                my = {}
-                bar = st.progress(0.0)
-                for b in range(0, len(units), BATCH):
-                    items = [{"id": i, "text": units[i][2]}
-                             for i in range(b, min(b + BATCH, len(units)))]
-                    for _ in range(3):
-                        try:
-                            out = json.loads(gen(sysmsg + "\n\n" + json.dumps(items, ensure_ascii=False)))
-                            for o in out:
-                                my[int(o["id"])] = clean_my(o["my"])
-                            if all(my.get(it["id"]) for it in items):
-                                break
-                        except Exception:  # noqa: BLE001
-                            pass
-                    bar.progress(min((b + BATCH) / len(units), 1.0))
-                for i in range(len(units)):
-                    if not my.get(i):
-                        my[i] = clean_my(gen(
-                            "Translate to natural spoken Burmese narration only, no notes:\n"
-                            + units[i][2], json_out=False))
-                gst.update(label="🌐 ဘာသာပြန်ပြီး", state="complete")
-
         st.session_state["units"] = [
-            {"start": units[i][0], "end": units[i][1], "src": units[i][2], "my": my.get(i, "")}
+            {"start": units[i][0], "end": units[i][1], "src": units[i][2], "my": ""}
             for i in range(len(units))
         ]
-        st.session_state["manual"] = not use_auto
+        st.session_state["manual"] = True
         st.session_state["ver"] = st.session_state.get("ver", 0) + 1
     except Exception as ex:  # noqa: BLE001
         st.error(f"Error: {ex}")
