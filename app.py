@@ -6,7 +6,9 @@ import asyncio
 import shutil
 import subprocess
 import tempfile
+import wave
 
+import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -148,8 +150,12 @@ if st.button("1️⃣ စာသားထုတ် + မြန်မာပြန�
             wav = os.path.join(wd, "audio16k.wav")
             sh(["ffmpeg", "-y", "-i", src, "-vn", "-ac", "1", "-ar", "16000", wav])
             wm = load_whisper(wsize)
+            with wave.open(wav) as wf:
+                audio = np.frombuffer(
+                    wf.readframes(wf.getnframes()), dtype=np.int16
+                ).astype(np.float32) / 32768.0
             segs, info = wm.transcribe(
-                wav, language=None if src_lang == "auto" else src_lang,
+                audio, language=None if src_lang == "auto" else src_lang,
                 vad_filter=True, beam_size=5)
             st.write(f"ဘာသာစကား: **{info.language}** ({info.language_probability:.0%})")
             bar = st.progress(0.0)
@@ -251,7 +257,7 @@ if st.session_state.get("units"):
 
             # ---- Smart Sync
             with st.status("🎬 Smart Sync render...", expanded=True) as rst:
-                bounds = [0.0] + [(units[i][1] + units[i + 1][0]) / 2 for i in range(n - 1)] + [vdur]
+                bounds = [0.0] + [(units[i]["end"] + units[i + 1]["start"]) / 2 for i in range(n - 1)] + [vdur]
                 clips, total_audio = [], 0.0
                 bar = st.progress(0.0)
                 for i in range(n):
