@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import cv2
 import numpy as np
 import streamlit as st
-from PIL import Image, ImageDraw, ImageFont, features
+from PIL import Image, ImageDraw, ImageFont, ImageFilter, features
 
 # ====================================================================
 # PAGE CONFIG
@@ -42,7 +42,7 @@ TRIM = (
 
 
 # ====================================================================
-# 🎬 CLEAN DARK UI (no fake elements)
+# 🎬 CLEAN DARK UI
 # ====================================================================
 def inject_css():
     st.markdown(
@@ -59,24 +59,20 @@ def inject_css():
             --accent-2: #25f4ee;
         }
 
-        /* Hide Streamlit chrome */
         #MainMenu, footer, header { visibility: hidden; }
         .stDeployButton, div[data-testid="stToolbar"], div[data-testid="stDecoration"] { display: none; }
 
-        /* Background */
         .stApp { background: var(--bg); color: var(--text); }
         .main .block-container {
             padding: 1.2rem 1rem 3rem 1rem;
             max-width: 620px;
         }
 
-        /* Typography */
         h1, h2, h3, h4, h5, h6 { color: var(--text) !important; letter-spacing: -0.01em; }
         p, span, label, div { color: var(--text); }
         .stCaption, [data-testid="stCaptionContainer"] { color: var(--muted) !important; }
         a { color: var(--accent-2); }
 
-        /* Title */
         .title-block {
             text-align: center;
             padding: 0.8rem 0 1.4rem;
@@ -96,7 +92,6 @@ def inject_css():
             margin-top: 0.35rem;
         }
 
-        /* Section header (numbers only, no fake tab bar) */
         .section-head {
             display: flex;
             align-items: center;
@@ -119,7 +114,6 @@ def inject_css():
             flex-shrink: 0;
         }
 
-        /* Buttons */
         .stButton > button {
             background: var(--card-2) !important;
             border: 1px solid var(--border) !important;
@@ -138,7 +132,6 @@ def inject_css():
         .stButton > button:active { transform: scale(0.99); }
         .stButton > button:disabled { opacity: 0.35 !important; }
 
-        /* Primary button */
         .stButton > button[kind="primary"] {
             background: var(--accent) !important;
             border: 1px solid var(--accent) !important;
@@ -151,7 +144,6 @@ def inject_css():
             box-shadow: 0 3px 16px rgba(254,44,85,0.45) !important;
         }
 
-        /* Download button */
         .stDownloadButton > button {
             background: linear-gradient(135deg, var(--accent-2), var(--accent)) !important;
             border: none !important;
@@ -167,7 +159,6 @@ def inject_css():
             box-shadow: 0 4px 18px rgba(37,244,238,0.3) !important;
         }
 
-        /* File uploader */
         section[data-testid="stFileUploadDropzone"] {
             background: var(--card) !important;
             border: 1.5px dashed var(--border) !important;
@@ -180,7 +171,6 @@ def inject_css():
         }
         section[data-testid="stFileUploadDropzone"] svg { fill: var(--accent-2) !important; }
 
-        /* Expander */
         details {
             background: var(--card) !important;
             border-radius: 10px !important;
@@ -197,7 +187,6 @@ def inject_css():
         details summary:hover { background: var(--card-2) !important; }
         details[open] summary { border-bottom: 1px solid var(--border) !important; }
 
-        /* Inputs */
         .stTextInput input, .stTextArea textarea, .stNumberInput input {
             background: var(--card) !important;
             border: 1px solid var(--border) !important;
@@ -210,14 +199,12 @@ def inject_css():
             box-shadow: 0 0 0 2px rgba(37,244,238,0.15) !important;
         }
 
-        /* Selectbox */
         .stSelectbox > div > div {
             background: var(--card) !important;
             border: 1px solid var(--border) !important;
             border-radius: 9px !important;
         }
 
-        /* Radio pills */
         .stRadio > div[role="radiogroup"] {
             display: flex;
             gap: 0.5rem;
@@ -237,17 +224,14 @@ def inject_css():
             background: var(--card-2);
         }
 
-        /* Slider */
         .stSlider > div > div > div > div {
             background: linear-gradient(90deg, var(--accent-2), var(--accent)) !important;
         }
 
-        /* Progress */
         .stProgress > div > div > div > div {
             background: linear-gradient(90deg, var(--accent-2), var(--accent)) !important;
         }
 
-        /* Code block */
         .stCode, pre {
             background: var(--card) !important;
             border: 1px solid var(--border) !important;
@@ -263,25 +247,21 @@ def inject_css():
             font-size: 0.85em;
         }
 
-        /* Alerts */
         .stAlert {
             border-radius: 9px !important;
             border: 1px solid var(--border) !important;
             background: var(--card) !important;
         }
 
-        /* Status */
         div[data-testid="stStatusWidget"] {
             background: var(--card) !important;
             border: 1px solid var(--border) !important;
             border-radius: 10px !important;
         }
 
-        /* Image / Video */
         img, video { border-radius: 12px !important; }
         video { border: 1px solid var(--border); }
 
-        /* Divider */
         hr {
             border: none;
             height: 1px;
@@ -289,7 +269,6 @@ def inject_css():
             margin: 1.3rem 0;
         }
 
-        /* Result card */
         .result-card {
             background: var(--card);
             border: 1px solid var(--border);
@@ -309,7 +288,6 @@ def inject_css():
         .result-card .title { font-size: 1rem; font-weight: 800; margin-bottom: 0.2rem; }
         .result-card .meta { font-size: 0.8rem; color: var(--muted); }
 
-        /* Timing rows */
         .stats-box {
             background: var(--card);
             border: 1px solid var(--border);
@@ -327,7 +305,6 @@ def inject_css():
         .stats-box .row:last-child { border-bottom: none; }
         .stats-box .row .val { color: var(--accent-2); font-weight: 700; }
 
-        /* Scrollbar */
         ::-webkit-scrollbar { width: 6px; }
         ::-webkit-scrollbar-track { background: var(--bg); }
         ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 6px; }
@@ -566,23 +543,60 @@ def split_for_sub(text, mc=36):
     return parts or [text]
 
 
-def build_overlay(text, W, H, font_path, fs, pos_y, alpha=200, color=(255, 255, 255),
-                  bold=0, layout="raqm"):
+# ====================================================================
+# 🎨 PNG SUBTITLE — TikTok gradient glow ဘေးဘောင်
+# ====================================================================
+def build_overlay(text, W, H, font_path, fs, pos_y, alpha=170, color=(255, 255, 255),
+                  bold=0, layout="raqm", glow=True):
+    """PNG စာတန်း: အနက်ရောင် rounded box + TikTok gradient (cyan→pink) blur glow ဘေးဘောင်"""
     font = get_font(font_path, fs, layout)
+
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
+
     pad_x, pad_y = int(fs * 0.6), int(fs * 0.5)
     lines = wrap_text(text, font, W - 2 * pad_x)
     if not lines:
         return None
+
     lh = int(fs * 1.4)
     box_w = W
     box_h = len(lines) * lh + 2 * pad_y
     box_x = 0
     max_y = max(0, H - box_h)
     box_y = max(0, min(int(pos_y / 100 * max_y), max_y))
+    radius = int(fs * 0.66)
+
+    # ---- TikTok gradient glow
+    if glow:
+        grad_w = W
+        grad = np.zeros((1, grad_w, 3), dtype=np.uint8)
+        c0 = np.array([238, 244, 0], dtype=np.float32)    # cyan  (BGR)
+        c1 = np.array([85, 44, 254], dtype=np.float32)    # pink  (BGR)
+        t = np.linspace(0, 1, grad_w, dtype=np.float32)
+        grad[0, :, :] = (c0[None, :] * (1 - t[:, None]) + c1[None, :] * t[:, None]).astype(np.uint8)
+        grad_full = np.repeat(grad, box_h, axis=0)
+
+        shape_mask = Image.new("L", (box_w, box_h), 0)
+        ImageDraw.Draw(shape_mask).rounded_rectangle(
+            [0, 0, box_w - 1, box_h - 1], radius=radius, fill=255
+        )
+
+        glow_rgba = np.dstack([grad_full, np.array(shape_mask)])
+        glow_img = Image.fromarray(cv2.cvtColor(glow_rgba, cv2.COLOR_BGRA2RGBA), "RGBA")
+        blur_px = max(6, fs // 3)
+        glow_blur = glow_img.filter(ImageFilter.GaussianBlur(blur_px))
+
+        pad_glow = blur_px * 2
+        glow_canvas = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        glow_canvas.paste(glow_blur, (box_x - pad_glow // 2, box_y - pad_glow // 2), glow_blur)
+        img.alpha_composite(glow_canvas)
+
+    # ---- box
     d.rounded_rectangle([box_x, box_y, box_x + box_w, box_y + box_h],
-                        radius=int(fs * 0.66), fill=(0, 0, 0, alpha))
+                        radius=radius, fill=(0, 0, 0, alpha))
+
+    # ---- text
     ink = (int(color[0]), int(color[1]), int(color[2]), 255)
     sw = max(1, round(fs / 15))
     ty = box_y + pad_y
@@ -594,6 +608,7 @@ def build_overlay(text, W, H, font_path, fs, pos_y, alpha=200, color=(255, 255, 
         d.text((lx, ty), ln, font=font, fill=ink,
                stroke_width=1 if bold else 0, stroke_fill=ink)
         ty += lh
+
     arr = np.array(img)
     rows = np.where(arr[:, :, 3].any(axis=1))[0]
     if len(rows) == 0:
@@ -921,6 +936,7 @@ with st.expander("🎨 စာတန်း + Neon", expanded=False):
     c5, c6 = st.columns(2)
     sub_size = c5.slider("စာအရွယ် (%)", 3.0, 12.0, 7.0, 0.5)
     sub_pos = c6.slider("နေရာ", 0, 100, 90, 1)
+    use_glow = st.toggle("TikTok gradient glow", value=True)
     use_neon = st.toggle("Neon border", value=True)
     zoom = st.slider("Zoom", 1.0, 1.25, 1.0, 0.01)
     font_path = find_font()
@@ -933,7 +949,13 @@ rate = f"{rate_n:+d}%"
 neon_th = 10
 neon_speed = 0.4
 flip = True
-sub_style = {"alpha": int(0.8 * 255), "color": (255, 255, 255), "bold": 0, "layout": "raqm"}
+sub_style = {
+    "alpha": int(0.67 * 255),
+    "color": (255, 255, 255),
+    "bold": 0,
+    "layout": "raqm",
+    "glow": use_glow,
+}
 proxy = secret("EDGE_TTS_PROXY") or None
 hf_token = secret("HF_TOKEN") or None
 
