@@ -18,7 +18,15 @@ import numpy as np
 import streamlit as st
 from PIL import Image, ImageDraw, ImageFont, features
 
-st.set_page_config(page_title="Recap → Myanmar", page_icon="🎙️", layout="centered")
+# ====================================================================
+# PAGE CONFIG
+# ====================================================================
+st.set_page_config(
+    page_title="Recap → Myanmar",
+    page_icon="🎬",
+    layout="centered",
+    initial_sidebar_state="collapsed",
+)
 
 TARGET, MAXD = 4.2, 5.6
 
@@ -31,6 +39,334 @@ TRIM = (
     "silenceremove=start_periods=1:start_threshold=-50dB,areverse,"
     "silenceremove=start_periods=1:start_threshold=-50dB,areverse,apad=pad_dur=0.2"
 )
+
+
+# ====================================================================
+# 🎨 CUSTOM CSS — Dark Neon Theme
+# ====================================================================
+def inject_css():
+    st.markdown(
+        """
+        <style>
+        /* ---------- Root / Background ---------- */
+        :root {
+            --neon-cyan: #00e5ff;
+            --neon-magenta: #ff2d95;
+            --neon-purple: #a855f7;
+            --bg-0: #0a0a12;
+            --bg-1: #12121f;
+            --bg-2: #1a1a2e;
+            --text: #e8e8f0;
+            --muted: #8b8ba7;
+        }
+
+        .stApp {
+            background: radial-gradient(circle at 15% 15%, #1a0a2e 0%, transparent 45%),
+                        radial-gradient(circle at 85% 85%, #0a1a2e 0%, transparent 45%),
+                        linear-gradient(135deg, var(--bg-0) 0%, var(--bg-1) 100%);
+            background-attachment: fixed;
+            color: var(--text);
+        }
+
+        /* Subtle grid overlay */
+        .stApp::before {
+            content: "";
+            position: fixed;
+            inset: 0;
+            background-image:
+                linear-gradient(rgba(0,229,255,0.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(0,229,255,0.03) 1px, transparent 1px);
+            background-size: 40px 40px;
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        .main .block-container {
+            padding-top: 2rem;
+            max-width: 780px;
+            position: relative;
+            z-index: 1;
+        }
+
+        /* ---------- Typography ---------- */
+        h1, h2, h3, h4 { color: var(--text) !important; letter-spacing: -0.02em; }
+        p, span, label, div { color: var(--text); }
+
+        /* ---------- Title (hero) ---------- */
+        .hero {
+            text-align: center;
+            padding: 2rem 1rem 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+        .hero h1 {
+            font-size: 2.6rem !important;
+            font-weight: 800 !important;
+            background: linear-gradient(90deg, var(--neon-cyan), var(--neon-magenta));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin: 0 !important;
+            filter: drop-shadow(0 0 20px rgba(0,229,255,0.35));
+            animation: glowPulse 3s ease-in-out infinite alternate;
+        }
+        .hero p {
+            color: var(--muted) !important;
+            font-size: 0.95rem;
+            margin-top: 0.5rem;
+            letter-spacing: 0.02em;
+        }
+        @keyframes glowPulse {
+            from { filter: drop-shadow(0 0 14px rgba(0,229,255,0.3)); }
+            to   { filter: drop-shadow(0 0 28px rgba(255,45,149,0.45)); }
+        }
+
+        /* ---------- Buttons ---------- */
+        .stButton > button {
+            background: linear-gradient(135deg, rgba(0,229,255,0.15), rgba(168,85,247,0.15)) !important;
+            border: 1px solid rgba(0,229,255,0.45) !important;
+            border-radius: 14px !important;
+            color: var(--text) !important;
+            font-weight: 600 !important;
+            padding: 0.65rem 1.4rem !important;
+            transition: all 0.25s ease !important;
+            backdrop-filter: blur(8px);
+            width: 100%;
+        }
+        .stButton > button:hover {
+            border-color: var(--neon-cyan) !important;
+            box-shadow: 0 0 22px rgba(0,229,255,0.35), inset 0 0 12px rgba(0,229,255,0.08) !important;
+            transform: translateY(-2px);
+        }
+        .stButton > button:disabled {
+            opacity: 0.35 !important;
+            filter: grayscale(0.6);
+        }
+
+        /* ---------- Primary button ---------- */
+        .stButton > button[kind="primary"] {
+            background: linear-gradient(135deg, var(--neon-cyan), var(--neon-purple)) !important;
+            color: #05050a !important;
+            border: none !important;
+            box-shadow: 0 4px 24px rgba(0,229,255,0.35) !important;
+        }
+        .stButton > button[kind="primary"]:hover {
+            box-shadow: 0 6px 32px rgba(255,45,149,0.5) !important;
+            transform: translateY(-2px);
+        }
+
+        /* ---------- Download button ---------- */
+        .stDownloadButton > button {
+            background: linear-gradient(135deg, rgba(0,229,255,0.2), rgba(168,85,247,0.2)) !important;
+            border: 1px solid var(--neon-cyan) !important;
+            border-radius: 14px !important;
+            color: var(--text) !important;
+            font-weight: 700 !important;
+            transition: all 0.25s ease !important;
+        }
+        .stDownloadButton > button:hover {
+            box-shadow: 0 0 26px rgba(0,229,255,0.5) !important;
+            transform: translateY(-2px);
+        }
+
+        /* ---------- Expander ---------- */
+        .streamlit-expanderHeader, details summary {
+            background: rgba(255,255,255,0.03) !important;
+            border-radius: 12px !important;
+            border: 1px solid rgba(0,229,255,0.15) !important;
+            color: var(--text) !important;
+            font-weight: 600 !important;
+        }
+        details {
+            background: rgba(18,18,31,0.7) !important;
+            border-radius: 14px !important;
+            border: 1px solid rgba(255,255,255,0.06) !important;
+            overflow: hidden;
+            margin-bottom: 0.6rem;
+        }
+        details[open] summary {
+            border-bottom: 1px solid rgba(0,229,255,0.15) !important;
+        }
+
+        /* ---------- Inputs ---------- */
+        .stTextInput > div > div > input,
+        .stTextArea > div > div > textarea,
+        .stNumberInput input {
+            background: rgba(10,10,18,0.6) !important;
+            border: 1px solid rgba(0,229,255,0.2) !important;
+            border-radius: 10px !important;
+            color: var(--text) !important;
+        }
+        .stTextArea textarea:focus, .stTextInput input:focus {
+            border-color: var(--neon-cyan) !important;
+            box-shadow: 0 0 12px rgba(0,229,255,0.25) !important;
+        }
+
+        /* ---------- Select / Radio / Slider ---------- */
+        .stSelectbox > div > div,
+        .stMultiSelect > div > div {
+            background: rgba(10,10,18,0.6) !important;
+            border: 1px solid rgba(0,229,255,0.2) !important;
+            border-radius: 10px !important;
+        }
+        .stSlider > div > div > div > div {
+            background: linear-gradient(90deg, var(--neon-cyan), var(--neon-magenta)) !important;
+        }
+        .stRadio > div {
+            gap: 0.5rem;
+        }
+        .stRadio label {
+            background: rgba(255,255,255,0.03);
+            padding: 0.45rem 0.9rem;
+            border-radius: 10px;
+            border: 1px solid rgba(255,255,255,0.06);
+        }
+
+        /* ---------- File uploader ---------- */
+        section[data-testid="stFileUploadDropzone"] {
+            background: rgba(0,229,255,0.04) !important;
+            border: 2px dashed rgba(0,229,255,0.35) !important;
+            border-radius: 16px !important;
+            transition: all 0.25s ease;
+        }
+        section[data-testid="stFileUploadDropzone"]:hover {
+            background: rgba(0,229,255,0.08) !important;
+            border-color: var(--neon-cyan) !important;
+            box-shadow: 0 0 20px rgba(0,229,255,0.2);
+        }
+
+        /* ---------- Progress bar ---------- */
+        .stProgress > div > div > div > div {
+            background: linear-gradient(90deg, var(--neon-cyan), var(--neon-magenta)) !important;
+        }
+
+        /* ---------- Toggle ---------- */
+        .stCheckbox, .stToggle {
+            padding: 0.2rem 0;
+        }
+
+        /* ---------- Alert / Info / Warning / Success ---------- */
+        .stAlert {
+            border-radius: 12px !important;
+            border-left-width: 4px !important;
+            backdrop-filter: blur(6px);
+        }
+
+        /* ---------- Status (running) ---------- */
+        div[data-testid="stStatusWidget"] {
+            border-radius: 12px !important;
+            border: 1px solid rgba(0,229,255,0.2) !important;
+        }
+
+        /* ---------- Code block ---------- */
+        .stCode, pre {
+            background: rgba(5,5,10,0.8) !important;
+            border: 1px solid rgba(0,229,255,0.2) !important;
+            border-radius: 12px !important;
+            color: #a8e6ff !important;
+        }
+        code {
+            background: rgba(0,229,255,0.08) !important;
+            color: var(--neon-cyan) !important;
+            padding: 2px 6px;
+            border-radius: 6px;
+        }
+
+        /* ---------- Image ---------- */
+        img {
+            border-radius: 14px !important;
+        }
+
+        /* ---------- Video ---------- */
+        video {
+            border-radius: 14px !important;
+            border: 1px solid rgba(0,229,255,0.25);
+            box-shadow: 0 0 24px rgba(0,229,255,0.15);
+        }
+
+        /* ---------- Divider ---------- */
+        hr {
+            border: none;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, rgba(0,229,255,0.3), transparent);
+            margin: 1.5rem 0;
+        }
+
+        /* ---------- Section badges ---------- */
+        .badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.72rem;
+            font-weight: 700;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            margin-bottom: 0.6rem;
+        }
+        .badge-cyan   { background: rgba(0,229,255,0.12); color: var(--neon-cyan); border: 1px solid rgba(0,229,255,0.35); }
+        .badge-magenta{ background: rgba(255,45,149,0.12); color: var(--neon-magenta); border: 1px solid rgba(255,45,149,0.35); }
+        .badge-purple { background: rgba(168,85,247,0.12); color: var(--neon-purple); border: 1px solid rgba(168,85,247,0.35); }
+
+        /* ---------- Scrollbar ---------- */
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: var(--bg-0); }
+        ::-webkit-scrollbar-thumb {
+            background: linear-gradient(var(--neon-cyan), var(--neon-purple));
+            border-radius: 8px;
+        }
+
+        /* ---------- Caption ---------- */
+        .stCaption, [data-testid="stCaptionContainer"] {
+            color: var(--muted) !important;
+        }
+
+        /* ---------- Timing table ---------- */
+        .timing-table {
+            width: 100%;
+            border-collapse: collapse;
+            border-radius: 12px;
+            overflow: hidden;
+            background: rgba(18,18,31,0.6);
+            border: 1px solid rgba(0,229,255,0.12);
+        }
+        .timing-table th {
+            background: rgba(0,229,255,0.08);
+            color: var(--neon-cyan);
+            padding: 10px 14px;
+            text-align: left;
+            font-size: 0.85rem;
+            font-weight: 600;
+        }
+        .timing-table td {
+            padding: 9px 14px;
+            border-top: 1px solid rgba(255,255,255,0.04);
+            font-size: 0.88rem;
+        }
+        .timing-table td:last-child {
+            color: var(--neon-cyan);
+            font-weight: 700;
+        }
+
+        /* ---------- Result card ---------- */
+        .result-card {
+            background: linear-gradient(135deg, rgba(0,229,255,0.08), rgba(168,85,247,0.08));
+            border: 1px solid rgba(0,229,255,0.3);
+            border-radius: 16px;
+            padding: 1.2rem 1.5rem;
+            margin-bottom: 1rem;
+            box-shadow: 0 0 30px rgba(0,229,255,0.1);
+        }
+        .result-card h3 {
+            margin: 0 0 0.3rem 0 !important;
+            color: var(--neon-cyan) !important;
+        }
+        .result-card .size {
+            color: var(--muted);
+            font-size: 0.9rem;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 # ====================================================================
@@ -67,9 +403,15 @@ def wav_dur(path):
         return w.getnframes() / float(w.getframerate())
 
 
-def timing_table(d):
-    rows = "\n".join(f"| {k} | **{fmt_t(v)}** |" for k, v in d.items())
-    return "| အဆင့် | ကြာချိန် |\n|---|---|\n" + rows
+def timing_html(d):
+    rows = "".join(
+        f"<tr><td>{k}</td><td>{fmt_t(v)}</td></tr>" for k, v in d.items()
+    )
+    return (
+        '<table class="timing-table">'
+        "<thead><tr><th>အဆင့်</th><th>ကြာချိန်</th></tr></thead>"
+        f"<tbody>{rows}</tbody></table>"
+    )
 
 
 def clean_my(text):
@@ -130,7 +472,7 @@ class VoxEngine:
         for i in order:
             sp = VOX_SPACES[i]
             if sp["type"] == "burmese" and not self.ref:
-                self.dead.add(i)          # reference audio မပါရင် ဒီ space မသုံးနိုင်
+                self.dead.add(i)
                 continue
             try:
                 cl = self.clients.get(i)
@@ -167,7 +509,6 @@ class VoxEngine:
 # Subtitle PNG (Pillow) helpers
 # ====================================================================
 def find_font():
-    """Myanmar font ရှာ: repo ထဲက MyanmarPadaung.ttf → တခြား .ttf → system (Padauk/Noto Myanmar)"""
     here = os.path.dirname(os.path.abspath(__file__))
     for name in ("MyanmarPadaung.ttf", "fonts/MyanmarPadaung.ttf"):
         pref = os.path.join(here, name)
@@ -209,7 +550,6 @@ def _is_start(c):
 
 
 def split_syll(word):
-    """မြန်မာစာလုံးကို syllable အလိုက်ခွဲ (အတိအကျမဟုတ်၊ ဖြတ်ဖို့လုံလောက်)"""
     idx = [0]
     n = len(word)
     for i in range(1, n):
@@ -243,7 +583,6 @@ def wrap_text(text, font, maxw):
 
 
 def split_for_sub(text, mc=36):
-    """စာတန်းတစ်ခုချင်းစီအတွက် စာသားခွဲ (။ နဲ့ နေရာလွတ် အလိုက်)"""
     sents = [s.strip() for s in re.split(r"(?<=။)", text) if s.strip()]
     parts = []
     for s in sents:
@@ -267,7 +606,6 @@ def split_for_sub(text, mc=36):
 
 def build_overlay(text, W, H, font_path, fs, pos_y, alpha=200, color=(255, 255, 255),
                   bold=0, layout="raqm"):
-    """စာတန်း PNG (RGBA): အနက်ရောင် rounded box (အကျယ်အပြည့်) + ဖြူစာ + အနက်အနားသတ်"""
     font = get_font(font_path, fs, layout)
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
@@ -317,7 +655,7 @@ def blend_overlay(fr, ov):
 # Neon border
 # ====================================================================
 class Neon:
-    BASE = np.array([12, 8, 10], np.float32)         # BGR
+    BASE = np.array([12, 8, 10], np.float32)
     CYAN = np.array([255, 255, 0], np.float32)
     MAGENTA = np.array([110, 30, 255], np.float32)
     IDLE = 0.14
@@ -368,8 +706,6 @@ def zoom_flip(fr, zoom, flip):
 def render_final(src, audio, out, plan, total, height, subs, font_path, fs_pct, pos_y,
                  neon_on, neon_th, neon_speed, flip, zoom, style=None, preset="ultrafast",
                  progress=None, fps_out=30):
-    """Single pass: source frame တစ်ခါဖတ် → smart-sync retime + zoom/flip + neon + စာတန်း → encode တစ်ခါ။
-    decode thread / python processing / ffmpeg encode သုံးခု တစ်ပြိုင်နက် အလုပ်လုပ်။"""
     style = style or {}
     cap = cv2.VideoCapture(src)
     sfps = cap.get(cv2.CAP_PROP_FPS) or 30.0
@@ -403,7 +739,7 @@ def render_final(src, audio, out, plan, total, height, subs, font_path, fs_pct, 
                     ui += 1
                 cs, _d, s0, spd = plan[ui]
                 idx = min(int((s0 + (T - cs) * spd) * sfps + 0.5), stotal - 1)
-                if idx > cur + 90:                      # ကြီးကြီးကျော်ရင် seek
+                if idx > cur + 90:
                     cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
                     cur = idx - 1
                 new = False
@@ -510,7 +846,7 @@ def make_preview(path, height, text, font_path, fs_pct, pos_y, neon_on, neon_th,
 
 
 # ====================================================================
-# Manual translate helpers (Gemini app မှာ copy-paste)
+# Manual translate helpers
 # ====================================================================
 def build_prompt(units):
     lines = "\n".join(f"[{i}] {u['src']}" for i, u in enumerate(units))
@@ -525,14 +861,13 @@ def build_prompt(units):
 
 
 def parse_numbered(text, n):
-    """'[3] စာသား' / '3. စာသား' / '3) စာသား' ပုံစံကို {id: text} ပြောင်း"""
     got = {}
     for line in text.splitlines():
         line = line.strip().strip("*").strip()
         m = re.match(r"^[\[\(#]?\s*(\d+)\s*[\]\)\.:\-–]?\s*(.+)$", line)
         if m and int(m.group(1)) < n:
             got[int(m.group(1))] = m.group(2).strip().strip("*").strip()
-    if not got:  # နံပါတ်မပါရင် စာကြောင်းအရေအတွက်ညီမှ အစဉ်လိုက်ယူ
+    if not got:
         plain = [l.strip() for l in text.splitlines() if l.strip()]
         if len(plain) == n:
             got = {i: plain[i] for i in range(n)}
@@ -554,7 +889,6 @@ def reset_job():
 
 
 def cleanup_uploads():
-    """တင်ထားတဲ့ video file တွေ ဖျက် + uploader ကို reset (VoxCPM reference audio ကို မထိ)"""
     for p in st.session_state.get("up_paths", []):
         try:
             os.remove(p)
@@ -565,7 +899,6 @@ def cleanup_uploads():
 
 
 def cleanup_after_download():
-    """Download နှိပ်ပြီးတာနဲ့: script + uploaded video + work files ဖျက်။ (ရလဒ် video ကို download အတွက် ချန်)"""
     wd = st.session_state.get("wd")
     if wd and os.path.isdir(wd):
         shutil.rmtree(wd, ignore_errors=True)
@@ -576,7 +909,6 @@ def cleanup_after_download():
 
 
 def save_upload(up):
-    """Upload ကို /tmp ထဲ တစ်ခါပဲ သိမ်း (rerun တိုင်း ပြန်မရေး)"""
     key = hashlib.md5(f"{up.name}-{up.size}".encode()).hexdigest()[:12]
     path = f"/tmp/recap_up_{key}.mp4"
     if not os.path.exists(path):
@@ -589,167 +921,26 @@ def save_upload(up):
 
 
 # ====================================================================
-# UI  — Flat Dark & Clean
+# 🎨 APPLY CSS
 # ====================================================================
-st.markdown("""
-<style>
-@import url('https://fonts.googleapis.com/css2?family=Padauk:wght@400;700&family=Inter:wght@400;600;700&display=swap');
+inject_css()
 
-html, body, [class*="css"] {
-    font-family: 'Padauk', 'Inter', 'Noto Sans Myanmar', sans-serif;
-}
+# ====================================================================
+# HERO HEADER
+# ====================================================================
+st.markdown(
+    """
+    <div class="hero">
+        <h1>🎬 Recap → Myanmar</h1>
+        <p>Whisper · Gemini · Edge TTS / VoxCPM · Smart Sync · Neon Border</p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
-/* --- Flat dark background --- */
-.stApp {
-    background: #0e0e11;
-    color: #d8d8e0;
-}
-
-.block-container {
-    padding-top: 1.6rem;
-    padding-bottom: 4rem;
-}
-
-/* --- Buttons --- */
-div.stButton > button {
-    border-radius: 10px;
-    border: 1px solid #2a2a35;
-    background: #1a1a22;
-    color: #e2e2ea;
-    font-weight: 600;
-    padding: 0.55rem 1rem;
-    transition: background 0.12s ease, border-color 0.12s ease;
-    box-shadow: none;
-}
-div.stButton > button:hover {
-    background: #23232d;
-    border-color: #3a3a48;
-    color: #fff;
-}
-div.stButton > button:disabled {
-    background: #15151b;
-    color: #4a4a58;
-    border-color: #1e1e26;
-}
-div.stButton > button[kind="primary"] {
-    background: #4b5cff;
-    border-color: #4b5cff;
-    color: #fff;
-}
-div.stButton > button[kind="primary"]:hover {
-    background: #3d4ce6;
-    border-color: #3d4ce6;
-}
-div.stButton > button[kind="primary"]:disabled {
-    background: #1e1e26;
-    border-color: #1e1e26;
-    color: #4a4a58;
-}
-
-/* --- Download button --- */
-div.stDownloadButton > button {
-    border-radius: 10px;
-    border: 1px solid #2a2a35;
-    background: #1a1a22;
-    color: #e2e2ea;
-    font-weight: 600;
-    padding: 0.55rem 1rem;
-    transition: background 0.12s ease, border-color 0.12s ease;
-    box-shadow: none;
-}
-div.stDownloadButton > button:hover {
-    background: #23232d;
-    border-color: #3a3a48;
-    color: #fff;
-}
-
-/* --- Inputs --- */
-.stTextArea textarea,
-.stTextInput input,
-.stNumberInput input {
-    background: #15151b !important;
-    border: 1px solid #26262f !important;
-    border-radius: 10px !important;
-    color: #e2e2ea !important;
-    font-size: 0.9rem !important;
-}
-.stTextArea textarea:focus,
-.stTextInput input:focus {
-    border-color: #4b5cff !important;
-    box-shadow: 0 0 0 2px rgba(75, 92, 255, 0.15) !important;
-}
-
-/* --- Selectboxes / dropdowns --- */
-div[data-baseweb="select"] > div {
-    background: #15151b !important;
-    border-color: #26262f !important;
-    border-radius: 10px !important;
-}
-div[data-baseweb="popover"] {
-    background: #1a1a22 !important;
-}
-
-/* --- Code block --- */
-pre {
-    background: #15151b !important;
-    border: 1px solid #26262f !important;
-    border-radius: 10px !important;
-}
-code {
-    color: #b8b8c8 !important;
-}
-
-/* --- Expander / status --- */
-details {
-    background: #14141a !important;
-    border: 1px solid #22222b !important;
-    border-radius: 10px !important;
-}
-div[data-testid="stStatusWidget"] {
-    background: #14141a;
-    border-radius: 10px;
-}
-
-/* --- File uploader --- */
-section[data-testid="stFileUploaderDropzone"] {
-    background: #13131a !important;
-    border: 1px dashed #2a2a35 !important;
-    border-radius: 10px !important;
-}
-section[data-testid="stFileUploaderDropzone"]:hover {
-    border-color: #4b5cff !important;
-}
-
-/* --- Progress bar --- */
-.stProgress > div > div > div > div {
-    background: #4b5cff !important;
-}
-
-/* --- Sidebar --- */
-section[data-testid="stSidebar"] {
-    background: #0b0b0f;
-    border-right: 1px solid #1a1a22;
-}
-section[data-testid="stSidebar"] h2 {
-    color: #b8b8c8;
-    font-size: 0.95rem;
-    font-weight: 600;
-}
-
-/* --- Divider --- */
-hr {
-    border-color: #1e1e26 !important;
-}
-
-/* hide streamlit branding */
-#MainMenu, footer { visibility: hidden; }
-</style>
-""", unsafe_allow_html=True)
-
-# ---- ခေါင်းစဉ်စာသား (Recap → Myanmar) ကို ဖျောက်ထားသည် ----
-# st.title("🎙️ Recap → Myanmar")
-# st.caption("Whisper → Gemini → Edge TTS / VoxCPM → Smart Sync → PNG စာတန်း + Neon border")
-
+# ====================================================================
+# SETTINGS
+# ====================================================================
 with st.expander("⚙️ Settings", expanded=False):
     c1, c2 = st.columns(2)
     src_lang = c1.selectbox("မူရင်းဘာသာ", ["auto", "en", "zh", "ko", "ja", "hi", "th", "vi", "id"])
@@ -763,10 +954,13 @@ with st.expander("⚙️ Settings", expanded=False):
                           help="ultrafast = အမြန်ဆုံး (file အနည်းငယ်ကြီး)၊ veryfast = file သေး/နှေးနည်းနည်း")
 
 with st.expander("🔊 အသံ (Voice)", expanded=False):
-    engine = st.radio("TTS engine",
-                      ["Edge TTS", "VoxCPM (မရရင် Edge TTS auto)"], horizontal=False)
+    engine = st.radio(
+        "TTS engine",
+        ["Edge TTS", "VoxCPM (မရရင် Edge TTS auto)"],
+        horizontal=True,
+    )
     voice = st.selectbox("Edge voice", ["my-MM-ThihaNeural", "my-MM-NilarNeural"],
-                         format_func=lambda v: "Thiha (ယောက်ျား)" if "Thiha" in v else "Nilar (မိန်းမ)")
+                         format_func=lambda v: "👨 Thiha (ယောက်ျား)" if "Thiha" in v else "👩 Nilar (မိန်းမ)")
     rate_n = st.slider("Edge speed %", -50, 100, 0, 5)
     tts_workers = st.slider("TTS တစ်ပြိုင်နက် အရေအတွက်", 1, 10, 6,
                             help="များရင်မြန်တယ်။ Edge က error ပေးရင် လျှော့ပါ (VoxCPM မှာ 1 ပဲသုံး)")
@@ -790,20 +984,23 @@ with st.expander("🎨 စာတန်း (PNG) + Neon", expanded=False):
 
 rate = f"{rate_n:+d}%"
 
-# ---- ပုံသေတန်ဖိုးများ (UI မှာ မပြ၊ နောက်ကွယ်မှာ အလုပ်လုပ်)
 neon_th = 10
 neon_speed = 0.4
 flip = True
 sub_style = {
-    "alpha": int(0.8 * 255),          # နောက်ခံ မည်း
-    "color": (255, 255, 255),         # စာအဖြူ
+    "alpha": int(0.8 * 255),
+    "color": (255, 255, 255),
     "bold": 0,
     "layout": "raqm",
 }
 proxy = secret("EDGE_TTS_PROXY") or None
 hf_token = secret("HF_TOKEN") or None
 
-up = st.file_uploader("Video ရွေးပါ", type=["mp4", "mov", "mkv", "webm", "m4v"],
+# ====================================================================
+# UPLOAD
+# ====================================================================
+st.markdown('<span class="badge badge-cyan">STEP 1</span>', unsafe_allow_html=True)
+up = st.file_uploader("🎥 Video ရွေးပါ", type=["mp4", "mov", "mkv", "webm", "m4v"],
                       key=f"vid_{st.session_state.get('up_key', 0)}")
 
 if up:
@@ -812,14 +1009,15 @@ if up:
         pv = make_preview(up_path, height, "စာတန်းထိုး နမူနာ စာသား ဖြစ်ပါတယ်။", font_path,
                           sub_size, sub_pos, use_neon, neon_th, neon_speed, flip, zoom, sub_style)
         if pv is not None:
-            st.image(pv, caption="Preview", use_container_width=True)
+            st.image(pv, caption="🔍 Preview", use_container_width=True)
     except Exception as ex:  # noqa: BLE001
         st.caption(f"preview မရ: {str(ex)[:100]}")
 
 # ====================================================================
-# Stage 1 : Whisper + Gemini
+# STAGE 1 : Whisper
 # ====================================================================
-if st.button("1️⃣ စာသားထုတ်", type="primary", disabled=not up, use_container_width=True):
+st.markdown('<span class="badge badge-magenta">STEP 2</span>', unsafe_allow_html=True)
+if st.button("🎧 စာသားထုတ်", type="primary", disabled=not up, use_container_width=True):
     reset_job()
     st.session_state.pop("cleaned", None)
     wd = tempfile.mkdtemp(prefix="recap_")
@@ -852,7 +1050,7 @@ if st.button("1️⃣ စာသားထုတ်", type="primary", disabled=not
             segs, info = wm.transcribe(
                 audio, language=None if src_lang == "auto" else src_lang,
                 vad_filter=True, beam_size=1, condition_on_previous_text=False)
-            st.write(f"ဘာသာစကား: **{info.language}** ({info.language_probability:.0%})")
+            st.write(f"🌐 ဘာသာစကား: **{info.language}** ({info.language_probability:.0%})")
             bar = st.progress(0.0)
             raw = []
             for s in segs:
@@ -882,19 +1080,22 @@ if st.button("1️⃣ စာသားထုတ်", type="primary", disabled=not
         st.error(f"Error: {ex}")
 
 # ====================================================================
-# Edit + Stage 2 : TTS → Smart Sync → Overlay
+# STAGE 2 : Translate + Render
 # ====================================================================
 if st.session_state.get("units"):
     units = st.session_state["units"]
     if st.session_state.get("t1"):
         st.caption("⏱️ " + " · ".join(f"{k} {fmt_t(v)}" for k, v in st.session_state["t1"].items()))
 
+    st.markdown("---")
+    st.markdown('<span class="badge badge-purple">STEP 3</span>', unsafe_allow_html=True)
+
     if st.session_state.get("manual"):
         st.subheader("📋 Gemini မှာ ဘာသာပြန်ရန်")
         st.caption("① အောက်က စာသားကို Copy (ညာထောင့် icon) → ② Gemini app မှာ paste → "
                    "③ ရလဒ်ကို အောက်က ကွက်ထဲ paste → ④ Apply")
         st.code(build_prompt(units), language=None)
-        pasted = st.text_area("Gemini ရလဒ် ဒီမှာ paste", height=200, key="gem_paste",
+        pasted = st.text_area("📥 Gemini ရလဒ် ဒီမှာ paste", height=200, key="gem_paste",
                               placeholder="[0] မြန်မာစာ...\n[1] မြန်မာစာ...")
         if st.button("✅ Apply (စာသား ဖြည့်)", use_container_width=True):
             got = parse_numbered(pasted, len(units))
@@ -909,7 +1110,9 @@ if st.session_state.get("units"):
         if st.session_state.get("apply_msg"):
             st.info(st.session_state["apply_msg"])
 
-    if st.button("2️⃣ အသံထုတ် + Video ပေါင်း", type="primary", use_container_width=True):
+    st.markdown("---")
+    st.markdown('<span class="badge badge-cyan">STEP 4</span>', unsafe_allow_html=True)
+    if st.button("🚀 အသံထုတ် + Video ပေါင်း", type="primary", use_container_width=True):
         wd, vdur = st.session_state["wd"], st.session_state["vdur"]
         src = os.path.join(wd, "src.mp4")
         my_list = [clean_my(u["my"]) for u in units]
@@ -922,7 +1125,6 @@ if st.session_state.get("units"):
             T = {}
             t_all = time.time()
 
-            # ---------------- TTS (တစ်ပြိုင်နက်)
             vox = None
             if engine.startswith("Vox"):
                 ref_path = None
@@ -982,7 +1184,6 @@ if st.session_state.get("units"):
                         st.caption(f"Vox error: {vox.last_err}")
                 tst.update(label=msg, state="complete")
 
-            # ---------------- အသံ ပေါင်း
             t_a = time.time()
             lst = f"{wd}/alist.txt"
             with open(lst, "w") as f:
@@ -992,7 +1193,6 @@ if st.session_state.get("units"):
             sh(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", allwav])
             T["🔗 အသံ ပေါင်း"] = time.time() - t_a
 
-            # ---------------- Smart Sync plan + Render (single pass)
             bounds = [0.0] + [(units[i]["end"] + units[i + 1]["start"]) / 2
                               for i in range(n - 1)] + [vdur]
             plan, cum = [], 0.0
@@ -1036,24 +1236,38 @@ if st.session_state.get("units"):
             st.error(f"Error: {ex}")
 
 # ====================================================================
-# Result
+# RESULT
 # ====================================================================
 if st.session_state.get("result"):
-    st.subheader("✅ ရလဒ်")
+    st.markdown("---")
     mb = len(st.session_state["result"]) / 1e6
-    st.caption(f"📦 File အရွယ်အစား: {mb:.1f} MB")
+    st.markdown(
+        f"""
+        <div class="result-card">
+            <h3>✅ ရလဒ် အသင့်ဖြစ်ပါပြီ</h3>
+            <div class="size">📦 File အရွယ်အစား: {mb:.1f} MB</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
     if st.toggle("▶️ ဒီမှာ video ကြည့်မယ် (ဖိုင်ကြီးရင်/net နှေးရင် ကြာတတ်)", value=False, key="show_vid"):
         st.video(st.session_state["result"])
+
     _tt = {}
     _tt.update(st.session_state.get("t1") or {})
     _tt.update(st.session_state.get("t2") or {})
     if _tt:
-        st.markdown("**⏱️ ဘယ်အပိုင်း ဘယ်လောက်ကြာလဲ**\n\n" + timing_table(_tt))
+        st.markdown("**⏱️ ဘယ်အပိုင်း ဘယ်လောက်ကြာလဲ**")
+        st.markdown(timing_html(_tt), unsafe_allow_html=True)
+
     st.download_button("⬇️ Download MP4", st.session_state["result"],
                        file_name="final_myanmar.mp4", mime="video/mp4",
                        use_container_width=True, on_click=cleanup_after_download)
+
     if st.session_state.get("cleaned"):
         st.caption("🧹 Script နဲ့ တင်ထားတဲ့ video ကို ဖျက်ပြီးပါပြီ")
+
     if st.button("🗑️ အသစ်ပြန်စ", use_container_width=True):
         reset_job()
         cleanup_uploads()
