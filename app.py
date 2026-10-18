@@ -23,7 +23,7 @@ from PIL import Image, ImageDraw, ImageFont, features
 # ====================================================================
 st.set_page_config(
     page_title="Recap → Myanmar",
-    page_icon="🎵",
+    page_icon="🎬",
     layout="centered",
     initial_sidebar_state="collapsed",
 )
@@ -42,446 +42,295 @@ TRIM = (
 
 
 # ====================================================================
-# 🎵 TIKTOK STYLE CSS
+# 🎬 CLEAN DARK UI (no fake elements)
 # ====================================================================
-def inject_tiktok_css():
+def inject_css():
     st.markdown(
         """
         <style>
         :root {
-            --tt-bg: #000000;
-            --tt-card: #121212;
-            --tt-card-2: #1c1c1e;
-            --tt-border: #2a2a2d;
-            --tt-text: #ffffff;
-            --tt-muted: #8a8a8e;
-            --tt-cyan: #25f4ee;
-            --tt-pink: #fe2c55;
-            --tt-red: #ff0050;
-            --tt-gray: #161823;
+            --bg: #0e0e11;
+            --card: #17171b;
+            --card-2: #1e1e24;
+            --border: #2a2a31;
+            --text: #f0f0f5;
+            --muted: #8a8a94;
+            --accent: #fe2c55;
+            --accent-2: #25f4ee;
         }
 
-        /* ---------- Hide Streamlit chrome ---------- */
+        /* Hide Streamlit chrome */
         #MainMenu, footer, header { visibility: hidden; }
-        .stDeployButton { display: none; }
-        div[data-testid="stToolbar"] { display: none; }
-        div[data-testid="stDecoration"] { display: none; }
+        .stDeployButton, div[data-testid="stToolbar"], div[data-testid="stDecoration"] { display: none; }
 
-        /* ---------- App background ---------- */
-        .stApp {
-            background: var(--tt-bg);
-            color: var(--tt-text);
-        }
+        /* Background */
+        .stApp { background: var(--bg); color: var(--text); }
         .main .block-container {
-            padding: 0.5rem 0.8rem 6rem 0.8rem;
-            max-width: 480px;
+            padding: 1.2rem 1rem 3rem 1rem;
+            max-width: 620px;
         }
 
-        /* ---------- Typography ---------- */
-        h1, h2, h3, h4, h5, h6 { color: var(--tt-text) !important; }
-        p, span, label, div { color: var(--tt-text); }
-        .stCaption, [data-testid="stCaptionContainer"] { color: var(--tt-muted) !important; }
-        a { color: var(--tt-cyan); }
+        /* Typography */
+        h1, h2, h3, h4, h5, h6 { color: var(--text) !important; letter-spacing: -0.01em; }
+        p, span, label, div { color: var(--text); }
+        .stCaption, [data-testid="stCaptionContainer"] { color: var(--muted) !important; }
+        a { color: var(--accent-2); }
 
-        /* ---------- Top bar (TikTok style) ---------- */
-        .tt-topbar {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 0.4rem 0.2rem 0.9rem;
-            border-bottom: 1px solid var(--tt-border);
-            margin-bottom: 0.9rem;
-            position: sticky;
-            top: 0;
-            background: var(--tt-bg);
-            z-index: 100;
+        /* Title */
+        .title-block {
+            text-align: center;
+            padding: 0.8rem 0 1.4rem;
         }
-        .tt-topbar .logo {
-            font-size: 1.35rem;
-            font-weight: 900;
-            letter-spacing: -0.04em;
-            background: linear-gradient(90deg, var(--tt-cyan), var(--tt-pink));
+        .title-block h1 {
+            font-size: 1.9rem !important;
+            font-weight: 800 !important;
+            margin: 0 !important;
+            background: linear-gradient(90deg, var(--accent-2), var(--accent));
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
             background-clip: text;
-            filter: drop-shadow(2px 2px 0 rgba(254,44,85,0.4));
         }
-        .tt-topbar .icons {
-            display: flex;
-            gap: 1rem;
-            font-size: 1.2rem;
-        }
-
-        /* ---------- Tab bar ---------- */
-        .tt-tabs {
-            display: flex;
-            justify-content: center;
-            gap: 1.8rem;
-            padding: 0.6rem 0 0.9rem;
-            border-bottom: 1px solid var(--tt-border);
-            margin-bottom: 1rem;
-        }
-        .tt-tab {
-            font-size: 0.88rem;
-            font-weight: 600;
-            color: var(--tt-muted);
-            padding-bottom: 0.4rem;
-            position: relative;
-            cursor: pointer;
-        }
-        .tt-tab.active {
-            color: var(--tt-text);
-        }
-        .tt-tab.active::after {
-            content: "";
-            position: absolute;
-            bottom: -0.9rem;
-            left: 50%;
-            transform: translateX(-50%);
-            width: 60%;
-            height: 3px;
-            background: var(--tt-text);
-            border-radius: 3px;
+        .title-block p {
+            color: var(--muted) !important;
+            font-size: 0.85rem;
+            margin-top: 0.35rem;
         }
 
-        /* ---------- Section header (TikTok style) ---------- */
-        .tt-section {
+        /* Section header (numbers only, no fake tab bar) */
+        .section-head {
             display: flex;
             align-items: center;
-            gap: 0.5rem;
-            margin: 1.2rem 0 0.7rem;
+            gap: 0.55rem;
+            margin: 1.4rem 0 0.7rem;
             font-weight: 700;
-            font-size: 1.02rem;
+            font-size: 1rem;
         }
-        .tt-section .num {
+        .section-head .num {
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            width: 22px;
-            height: 22px;
+            width: 24px;
+            height: 24px;
             border-radius: 50%;
-            background: linear-gradient(135deg, var(--tt-cyan), var(--tt-pink));
+            background: linear-gradient(135deg, var(--accent-2), var(--accent));
             color: #000;
-            font-size: 0.75rem;
+            font-size: 0.78rem;
             font-weight: 900;
+            flex-shrink: 0;
         }
 
-        /* ---------- Buttons (TikTok pill) ---------- */
+        /* Buttons */
         .stButton > button {
-            background: var(--tt-card-2) !important;
-            border: 1px solid var(--tt-border) !important;
-            border-radius: 12px !important;
-            color: var(--tt-text) !important;
-            font-weight: 700 !important;
-            padding: 0.7rem 1rem !important;
+            background: var(--card-2) !important;
+            border: 1px solid var(--border) !important;
+            border-radius: 10px !important;
+            color: var(--text) !important;
+            font-weight: 600 !important;
+            padding: 0.65rem 1rem !important;
             transition: all 0.15s ease !important;
             width: 100%;
-            font-size: 0.95rem !important;
+            font-size: 0.92rem !important;
         }
         .stButton > button:hover {
-            background: #2a2a2d !important;
-            border-color: #3a3a3d !important;
-            transform: scale(1.01);
+            background: #2a2a31 !important;
+            border-color: #3a3a42 !important;
         }
-        .stButton > button:active {
-            transform: scale(0.98);
-        }
-        .stButton > button:disabled {
-            opacity: 0.35 !important;
-        }
+        .stButton > button:active { transform: scale(0.99); }
+        .stButton > button:disabled { opacity: 0.35 !important; }
 
-        /* ---------- Primary button (TikTok red) ---------- */
+        /* Primary button */
         .stButton > button[kind="primary"] {
-            background: var(--tt-pink) !important;
-            border: 1px solid var(--tt-pink) !important;
+            background: var(--accent) !important;
+            border: 1px solid var(--accent) !important;
             color: #fff !important;
-            font-weight: 800 !important;
-            box-shadow: 0 2px 12px rgba(254,44,85,0.35) !important;
+            font-weight: 700 !important;
+            box-shadow: 0 2px 10px rgba(254,44,85,0.3) !important;
         }
         .stButton > button[kind="primary"]:hover {
-            background: var(--tt-red) !important;
-            box-shadow: 0 4px 20px rgba(254,44,85,0.5) !important;
-        }
-        .stButton > button[kind="primary"]:active {
-            transform: scale(0.97);
+            background: #ff0050 !important;
+            box-shadow: 0 3px 16px rgba(254,44,85,0.45) !important;
         }
 
-        /* ---------- Download button ---------- */
+        /* Download button */
         .stDownloadButton > button {
-            background: linear-gradient(135deg, var(--tt-cyan), var(--tt-pink)) !important;
+            background: linear-gradient(135deg, var(--accent-2), var(--accent)) !important;
             border: none !important;
-            border-radius: 12px !important;
+            border-radius: 10px !important;
             color: #000 !important;
-            font-weight: 900 !important;
-            padding: 0.85rem 1rem !important;
-            font-size: 1rem !important;
-            box-shadow: 0 3px 16px rgba(37,244,238,0.35) !important;
+            font-weight: 800 !important;
+            padding: 0.8rem 1rem !important;
+            font-size: 0.95rem !important;
             transition: all 0.15s ease !important;
         }
         .stDownloadButton > button:hover {
-            transform: scale(1.02);
-            box-shadow: 0 5px 24px rgba(254,44,85,0.45) !important;
+            transform: scale(1.01);
+            box-shadow: 0 4px 18px rgba(37,244,238,0.3) !important;
         }
 
-        /* ---------- File uploader (dropzone) ---------- */
+        /* File uploader */
         section[data-testid="stFileUploadDropzone"] {
-            background: var(--tt-card) !important;
-            border: 1.5px dashed var(--tt-border) !important;
-            border-radius: 14px !important;
-            padding: 1.5rem 1rem !important;
-            transition: all 0.2s ease;
+            background: var(--card) !important;
+            border: 1.5px dashed var(--border) !important;
+            border-radius: 12px !important;
+            padding: 1.3rem 1rem !important;
         }
         section[data-testid="stFileUploadDropzone"]:hover {
-            border-color: var(--tt-cyan) !important;
-            background: #181818 !important;
+            border-color: var(--accent-2) !important;
+            background: #1a1a20 !important;
         }
-        section[data-testid="stFileUploadDropzone"] svg {
-            fill: var(--tt-cyan) !important;
-        }
+        section[data-testid="stFileUploadDropzone"] svg { fill: var(--accent-2) !important; }
 
-        /* ---------- Expander (settings) ---------- */
+        /* Expander */
         details {
-            background: var(--tt-card) !important;
-            border-radius: 12px !important;
-            border: 1px solid var(--tt-border) !important;
+            background: var(--card) !important;
+            border-radius: 10px !important;
+            border: 1px solid var(--border) !important;
             margin-bottom: 0.5rem !important;
             overflow: hidden;
         }
         details summary {
-            padding: 0.85rem 1rem !important;
+            padding: 0.8rem 1rem !important;
             font-weight: 600 !important;
-            color: var(--tt-text) !important;
-            font-size: 0.95rem !important;
-        }
-        details summary:hover {
-            background: var(--tt-card-2) !important;
-        }
-        details[open] summary {
-            border-bottom: 1px solid var(--tt-border) !important;
-        }
-
-        /* ---------- Inputs ---------- */
-        .stTextInput input,
-        .stTextArea textarea,
-        .stNumberInput input {
-            background: var(--tt-card) !important;
-            border: 1px solid var(--tt-border) !important;
-            border-radius: 10px !important;
-            color: var(--tt-text) !important;
+            color: var(--text) !important;
             font-size: 0.92rem !important;
         }
-        .stTextArea textarea:focus,
-        .stTextInput input:focus {
-            border-color: var(--tt-cyan) !important;
+        details summary:hover { background: var(--card-2) !important; }
+        details[open] summary { border-bottom: 1px solid var(--border) !important; }
+
+        /* Inputs */
+        .stTextInput input, .stTextArea textarea, .stNumberInput input {
+            background: var(--card) !important;
+            border: 1px solid var(--border) !important;
+            border-radius: 9px !important;
+            color: var(--text) !important;
+            font-size: 0.9rem !important;
+        }
+        .stTextArea textarea:focus, .stTextInput input:focus {
+            border-color: var(--accent-2) !important;
             box-shadow: 0 0 0 2px rgba(37,244,238,0.15) !important;
         }
 
-        /* ---------- Selectbox / Radio ---------- */
+        /* Selectbox */
         .stSelectbox > div > div {
-            background: var(--tt-card) !important;
-            border: 1px solid var(--tt-border) !important;
-            border-radius: 10px !important;
-        }
-        .stSelectbox > div > div:hover {
-            border-color: #3a3a3d !important;
+            background: var(--card) !important;
+            border: 1px solid var(--border) !important;
+            border-radius: 9px !important;
         }
 
-        /* ---------- Radio as pill tabs ---------- */
+        /* Radio pills */
         .stRadio > div[role="radiogroup"] {
             display: flex;
             gap: 0.5rem;
             flex-wrap: wrap;
         }
         .stRadio > div[role="radiogroup"] > label {
-            background: var(--tt-card);
-            padding: 0.55rem 0.95rem !important;
-            border-radius: 10px;
-            border: 1px solid var(--tt-border);
+            background: var(--card);
+            padding: 0.5rem 0.9rem !important;
+            border-radius: 9px;
+            border: 1px solid var(--border);
             cursor: pointer;
-            transition: all 0.15s ease;
             margin: 0 !important;
+            transition: all 0.15s ease;
         }
         .stRadio > div[role="radiogroup"] > label:hover {
-            border-color: var(--tt-cyan);
-            background: var(--tt-card-2);
+            border-color: var(--accent-2);
+            background: var(--card-2);
         }
 
-        /* ---------- Slider ---------- */
+        /* Slider */
         .stSlider > div > div > div > div {
-            background: linear-gradient(90deg, var(--tt-cyan), var(--tt-pink)) !important;
-        }
-        .stSlider [data-baseweb="slider"] [role="slider"] {
-            background: #fff !important;
-            box-shadow: 0 0 0 3px var(--tt-pink) !important;
+            background: linear-gradient(90deg, var(--accent-2), var(--accent)) !important;
         }
 
-        /* ---------- Toggle ---------- */
-        .stCheckbox label span[data-baseweb="checkbox"] div[role="checkbox"] {
-            background: var(--tt-pink) !important;
-            border-color: var(--tt-pink) !important;
-        }
-
-        /* ---------- Progress ---------- */
+        /* Progress */
         .stProgress > div > div > div > div {
-            background: linear-gradient(90deg, var(--tt-cyan), var(--tt-pink)) !important;
+            background: linear-gradient(90deg, var(--accent-2), var(--accent)) !important;
         }
 
-        /* ---------- Code block ---------- */
+        /* Code block */
         .stCode, pre {
-            background: var(--tt-card) !important;
-            border: 1px solid var(--tt-border) !important;
-            border-radius: 10px !important;
-            color: var(--tt-text) !important;
-            font-size: 0.8rem !important;
+            background: var(--card) !important;
+            border: 1px solid var(--border) !important;
+            border-radius: 9px !important;
+            color: var(--text) !important;
+            font-size: 0.78rem !important;
         }
         code {
-            background: var(--tt-card-2) !important;
-            color: var(--tt-cyan) !important;
+            background: var(--card-2) !important;
+            color: var(--accent-2) !important;
             padding: 2px 6px;
             border-radius: 5px;
             font-size: 0.85em;
         }
 
-        /* ---------- Alerts ---------- */
+        /* Alerts */
         .stAlert {
-            border-radius: 10px !important;
-            border: 1px solid var(--tt-border) !important;
-            background: var(--tt-card) !important;
+            border-radius: 9px !important;
+            border: 1px solid var(--border) !important;
+            background: var(--card) !important;
         }
 
-        /* ---------- Status ---------- */
+        /* Status */
         div[data-testid="stStatusWidget"] {
-            background: var(--tt-card) !important;
-            border: 1px solid var(--tt-border) !important;
-            border-radius: 12px !important;
+            background: var(--card) !important;
+            border: 1px solid var(--border) !important;
+            border-radius: 10px !important;
         }
 
-        /* ---------- Image / Video ---------- */
-        img, video {
-            border-radius: 14px !important;
-        }
-        video {
-            border: 1px solid var(--tt-border);
-        }
+        /* Image / Video */
+        img, video { border-radius: 12px !important; }
+        video { border: 1px solid var(--border); }
 
-        /* ---------- Divider ---------- */
+        /* Divider */
         hr {
             border: none;
             height: 1px;
-            background: var(--tt-border);
-            margin: 1.2rem 0;
+            background: var(--border);
+            margin: 1.3rem 0;
         }
 
-        /* ---------- Result card (TikTok video card) ---------- */
-        .tt-result {
-            background: var(--tt-card);
-            border: 1px solid var(--tt-border);
-            border-radius: 16px;
+        /* Result card */
+        .result-card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
             padding: 1rem 1.2rem;
             margin-bottom: 0.8rem;
             position: relative;
             overflow: hidden;
         }
-        .tt-result::before {
+        .result-card::before {
             content: "";
             position: absolute;
             top: 0; left: 0; right: 0;
             height: 3px;
-            background: linear-gradient(90deg, var(--tt-cyan), var(--tt-pink));
+            background: linear-gradient(90deg, var(--accent-2), var(--accent));
         }
-        .tt-result .title {
-            font-size: 1.05rem;
-            font-weight: 800;
-            margin-bottom: 0.25rem;
-        }
-        .tt-result .meta {
-            font-size: 0.82rem;
-            color: var(--tt-muted);
-        }
+        .result-card .title { font-size: 1rem; font-weight: 800; margin-bottom: 0.2rem; }
+        .result-card .meta { font-size: 0.8rem; color: var(--muted); }
 
-        /* ---------- Timing list (TikTok stats) ---------- */
-        .tt-stats {
-            background: var(--tt-card);
-            border: 1px solid var(--tt-border);
-            border-radius: 12px;
-            padding: 0.85rem 1rem;
-            margin: 0.6rem 0;
+        /* Timing rows */
+        .stats-box {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 0.7rem 0.9rem;
+            margin: 0.5rem 0;
         }
-        .tt-stats .row {
+        .stats-box .row {
             display: flex;
             justify-content: space-between;
-            padding: 0.4rem 0;
-            font-size: 0.86rem;
-            border-bottom: 1px solid #1f1f22;
+            padding: 0.35rem 0;
+            font-size: 0.83rem;
+            border-bottom: 1px solid #22222a;
         }
-        .tt-stats .row:last-child {
-            border-bottom: none;
-        }
-        .tt-stats .row .val {
-            color: var(--tt-cyan);
-            font-weight: 700;
-        }
+        .stats-box .row:last-child { border-bottom: none; }
+        .stats-box .row .val { color: var(--accent-2); font-weight: 700; }
 
-        /* ---------- Floating action bar (bottom) ---------- */
-        .tt-fab {
-            position: fixed;
-            bottom: 1rem;
-            left: 50%;
-            transform: translateX(-50%);
-            display: flex;
-            gap: 0.5rem;
-            background: rgba(18,18,18,0.92);
-            backdrop-filter: blur(12px);
-            padding: 0.5rem 0.6rem;
-            border-radius: 50px;
-            border: 1px solid var(--tt-border);
-            z-index: 999;
-            box-shadow: 0 4px 24px rgba(0,0,0,0.6);
-        }
-        .tt-fab .btn {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.35rem;
-            padding: 0.5rem 0.9rem;
-            border-radius: 50px;
-            font-size: 0.82rem;
-            font-weight: 700;
-            color: var(--tt-text);
-            text-decoration: none;
-            transition: all 0.15s ease;
-            cursor: default;
-        }
-        .tt-fab .btn.active {
-            background: var(--tt-pink);
-        }
-
-        /* ---------- Scrollbar ---------- */
-        ::-webkit-scrollbar { width: 0px; }
-
-        /* ---------- Custom avatar ---------- */
-        .tt-avatar {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            width: 38px;
-            height: 38px;
-            border-radius: 50%;
-            background: linear-gradient(135deg, var(--tt-cyan), var(--tt-pink));
-            color: #000;
-            font-weight: 900;
-            font-size: 0.9rem;
-        }
-
-        /* ---------- Loading shimmer ---------- */
-        @keyframes ttshine {
-            0% { background-position: -200% 0; }
-            100% { background-position: 200% 0; }
-        }
-        .tt-shine {
-            background: linear-gradient(90deg, var(--tt-card) 0%, var(--tt-card-2) 50%, var(--tt-card) 100%);
-            background-size: 200% 100%;
-            animation: ttshine 2s infinite;
-        }
+        /* Scrollbar */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: var(--bg); }
+        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 6px; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -489,7 +338,7 @@ def inject_tiktok_css():
 
 
 # ====================================================================
-# Generic helpers
+# Helpers
 # ====================================================================
 def secret(name, default=""):
     try:
@@ -527,7 +376,7 @@ def timing_html(d):
         f'<div class="row"><span>{k}</span><span class="val">{fmt_t(v)}</span></div>'
         for k, v in d.items()
     )
-    return f'<div class="tt-stats">{rows}</div>'
+    return f'<div class="stats-box">{rows}</div>'
 
 
 def clean_my(text):
@@ -536,7 +385,7 @@ def clean_my(text):
     ).strip()
 
 
-@st.cache_resource(show_spinner="Whisper model ကို ဖွင့်နေတယ်...")
+@st.cache_resource(show_spinner="Whisper model ဖွင့်နေတယ်...")
 def load_whisper(size):
     from faster_whisper import WhisperModel
     return WhisperModel(size, device="cpu", compute_type="int8",
@@ -619,7 +468,7 @@ class VoxEngine:
 
 
 # ====================================================================
-# Subtitle / Neon helpers
+# Subtitle / Neon
 # ====================================================================
 def find_font():
     here = os.path.dirname(os.path.abspath(__file__))
@@ -1019,54 +868,43 @@ def save_upload(up):
     return path
 
 
-# ====================================================================
-# 🎵 TIKTOK UI
-# ====================================================================
-inject_tiktok_css()
+def section(num, title):
+    st.markdown(
+        f'<div class="section-head"><span class="num">{num}</span>{title}</div>',
+        unsafe_allow_html=True,
+    )
 
-# Top bar (TikTok style)
+
+# ====================================================================
+# UI
+# ====================================================================
+inject_css()
+
 st.markdown(
     """
-    <div class="tt-topbar">
-        <div class="logo">Recap Myanmar</div>
-        <div class="icons">
-            <span>🔍</span>
-            <span>💬</span>
-            <span>👤</span>
-        </div>
+    <div class="title-block">
+        <h1>🎬 Recap → Myanmar</h1>
+        <p>Whisper · Gemini · TTS · Smart Sync · Subtitle</p>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
-# Tab bar
-st.markdown(
-    """
-    <div class="tt-tabs">
-        <div class="tt-tab active">For You</div>
-        <div class="tt-tab">Following</div>
-        <div class="tt-tab">Explore</div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
-# ---- Settings (collapsed expanders)
+# ---- Settings
 with st.expander("⚙️ Settings", expanded=False):
     c1, c2 = st.columns(2)
     src_lang = c1.selectbox("မူရင်းဘာသာ", ["auto", "en", "zh", "ko", "ja", "hi", "th", "vi", "id"])
-    wsize = c2.selectbox("Whisper model", ["tiny", "base", "small"], index=1,
-                         help="small = တိကျ/နှေး၊ tiny = မြန်/အမှားများ")
+    wsize = c2.selectbox("Whisper model", ["tiny", "base", "small"], index=1)
     c3, c4 = st.columns(2)
     height = c3.select_slider("Output height", [360, 480, 720, 1080], value=720)
-    max_speed = c4.slider("ရုပ် အမြန်ဆုံး ဆ", 1.0, 2.0, 1.25, 0.05)
-    max_min = st.slider("Video အရှည် ကန့်သတ် (မိနစ်)", 1, 15, 6)
+    max_speed = c4.slider("အမြန်ဆုံး ဆ", 1.0, 2.0, 1.25, 0.05)
+    max_min = st.slider("Video အရှည် (မိနစ်)", 1, 15, 6)
     preset = st.selectbox("Render speed", ["ultrafast", "superfast", "veryfast"], index=0)
 
 with st.expander("🔊 အသံ (Voice)", expanded=False):
     engine = st.radio(
         "TTS engine",
-        ["Edge TTS", "VoxCPM (မရရင် Edge TTS auto)"],
+        ["Edge TTS", "VoxCPM (မရရင် Edge auto)"],
         horizontal=True,
     )
     voice = st.selectbox("Edge voice", ["my-MM-ThihaNeural", "my-MM-NilarNeural"],
@@ -1076,7 +914,7 @@ with st.expander("🔊 အသံ (Voice)", expanded=False):
     ref_up = None
     if engine.startswith("Vox"):
         ref_up = st.file_uploader("🎤 Reference audio (optional)", type=["wav", "mp3", "m4a"])
-        st.caption("VoxCPM Space တွေက queue/sleep ဖြစ်တတ်တယ်။")
+        st.caption("VoxCPM Space queue ရှိတတ်တယ်။ မရရင် Edge TTS နဲ့ အစားထိုးမယ်။")
 
 with st.expander("🎨 စာတန်း + Neon", expanded=False):
     use_sub = st.toggle("PNG စာတန်းထည့်", value=True)
@@ -1099,11 +937,8 @@ sub_style = {"alpha": int(0.8 * 255), "color": (255, 255, 255), "bold": 0, "layo
 proxy = secret("EDGE_TTS_PROXY") or None
 hf_token = secret("HF_TOKEN") or None
 
-# ---- Step 1: Upload
-st.markdown(
-    '<div class="tt-section"><span class="num">1</span> Video ရွေးပါ</div>',
-    unsafe_allow_html=True,
-)
+# ---- Step 1
+section(1, "Video ရွေးပါ")
 up = st.file_uploader(" ", type=["mp4", "mov", "mkv", "webm", "m4v"],
                       key=f"vid_{st.session_state.get('up_key', 0)}",
                       label_visibility="collapsed")
@@ -1111,18 +946,15 @@ up = st.file_uploader(" ", type=["mp4", "mov", "mkv", "webm", "m4v"],
 if up:
     try:
         up_path = save_upload(up)
-        pv = make_preview(up_path, height, "စာတန်းထိုး နမူနာ စာသား ဖြစ်ပါတယ်။", font_path,
+        pv = make_preview(up_path, height, "စာတန်းထိုး နမူနာ စာသား", font_path,
                           sub_size, sub_pos, use_neon, neon_th, neon_speed, flip, zoom, sub_style)
         if pv is not None:
             st.image(pv, caption="🔍 Preview", use_container_width=True)
     except Exception as ex:
         st.caption(f"preview မရ: {str(ex)[:100]}")
 
-# ---- Step 2: Whisper
-st.markdown(
-    '<div class="tt-section"><span class="num">2</span> စာသားထုတ်</div>',
-    unsafe_allow_html=True,
-)
+# ---- Step 2
+section(2, "စာသားထုတ်")
 if st.button("🎧 စာသားထုတ်", type="primary", disabled=not up, use_container_width=True):
     reset_job()
     st.session_state.pop("cleaned", None)
@@ -1134,12 +966,12 @@ if st.button("🎧 စာသားထုတ်", type="primary", disabled=not up
     try:
         vdur = dur(src)
         if vdur > max_min * 60:
-            st.error(f"Video က {vdur/60:.1f} မိနစ်ရှိတယ်။ {max_min} မိနစ်အောက်ပဲ လက်ခံတယ်")
+            st.error(f"Video က {vdur/60:.1f} မိနစ် · ကန့်သတ် {max_min} မိနစ်")
             st.stop()
         st.session_state["vdur"] = vdur
 
         T1 = {}
-        with st.status("🎧 Whisper စာသားပြောင်းနေတယ်...", expanded=True) as stt:
+        with st.status("🎧 Whisper...", expanded=True) as stt:
             t_a = time.time()
             wav = os.path.join(wd, "audio16k.wav")
             sh(["ffmpeg", "-y", "-i", src, "-vn", "-ac", "1", "-ar", "16000", wav])
@@ -1147,22 +979,22 @@ if st.button("🎧 စာသားထုတ်", type="primary", disabled=not up
                 audio = np.frombuffer(
                     wf.readframes(wf.getnframes()), dtype=np.int16
                 ).astype(np.float32) / 32768.0
-            T1["🎞️ Audio ထုတ်"] = time.time() - t_a
+            T1["🎞️ Audio"] = time.time() - t_a
             t_a = time.time()
             wm = load_whisper(wsize)
-            T1["📦 Whisper model ဖွင့်"] = time.time() - t_a
+            T1["📦 Model"] = time.time() - t_a
             t_a = time.time()
             segs, info = wm.transcribe(
                 audio, language=None if src_lang == "auto" else src_lang,
                 vad_filter=True, beam_size=1, condition_on_previous_text=False)
-            st.write(f"🌐 ဘာသာစကား: **{info.language}** ({info.language_probability:.0%})")
+            st.write(f"🌐 {info.language} ({info.language_probability:.0%})")
             bar = st.progress(0.0)
             raw = []
             for s in segs:
                 if s.text.strip():
                     raw.append((s.start, s.end, s.text.strip()))
                 bar.progress(min(s.end / vdur, 1.0))
-            T1["🎧 Whisper စာသားပြောင်း"] = time.time() - t_a
+            T1["🎧 Whisper"] = time.time() - t_a
             units = []
             for s, e, t in raw:
                 if units and (units[-1][1] - units[-1][0]) < TARGET and (e - units[-1][0]) <= MAXD:
@@ -1172,7 +1004,7 @@ if st.button("🎧 စာသားထုတ်", type="primary", disabled=not up
             if not units:
                 stt.update(label="စကားပြောသံ မတွေ့ပါ", state="error")
                 st.stop()
-            stt.update(label=f"🎧 အပိုင်း {len(units)} ခု ရပြီ · {fmt_t(sum(T1.values()))}", state="complete")
+            stt.update(label=f"✅ {len(units)} ပိုင်း · {fmt_t(sum(T1.values()))}", state="complete")
             st.session_state["t1"] = T1
 
         st.session_state["units"] = [
@@ -1184,21 +1016,17 @@ if st.button("🎧 စာသားထုတ်", type="primary", disabled=not up
     except Exception as ex:
         st.error(f"Error: {ex}")
 
-# ---- Step 3: Translate
+# ---- Steps 3 & 4
 if st.session_state.get("units"):
     units = st.session_state["units"]
     if st.session_state.get("t1"):
         st.caption("⏱️ " + " · ".join(f"{k} {fmt_t(v)}" for k, v in st.session_state["t1"].items()))
 
-    st.markdown(
-        '<div class="tt-section"><span class="num">3</span> ဘာသာပြန် (Gemini)</div>',
-        unsafe_allow_html=True,
-    )
-
+    section(3, "ဘာသာပြန် (Gemini)")
     if st.session_state.get("manual"):
-        st.caption("① အောက်က စာသား Copy → ② Gemini app မှာ paste → ③ ရလဒ်ကို အောက်ကွက်ထဲ paste → ④ Apply")
+        st.caption("① အောက်က စာသား Copy → ② Gemini app မှာ paste → ③ ရလဒ် အောက်ကွက်ထဲ paste → ④ Apply")
         st.code(build_prompt(units), language=None)
-        pasted = st.text_area("📥 Gemini ရလဒ်", height=180, key="gem_paste",
+        pasted = st.text_area("📥 Gemini ရလဒ်", height=160, key="gem_paste",
                               placeholder="[0] မြန်မာစာ...\n[1] မြန်မာစာ...",
                               label_visibility="collapsed")
         if st.button("✅ Apply", use_container_width=True):
@@ -1207,18 +1035,14 @@ if st.session_state.get("units"):
                 units[i]["my"] = clean_my(t)
             missing = [i for i in range(len(units)) if not units[i]["my"]]
             st.session_state["apply_msg"] = (
-                f"ဖြည့်ပြီး {len(got)}/{len(units)} ကြောင်း"
-                + (f" · မပါသေးတာ: {missing[:15]}" if missing else " ✅"))
+                f"ဖြည့်ပြီး {len(got)}/{len(units)}"
+                + (f" · မပါ: {missing[:15]}" if missing else " ✅"))
             st.session_state["ver"] = st.session_state.get("ver", 0) + 1
             st.rerun()
         if st.session_state.get("apply_msg"):
             st.info(st.session_state["apply_msg"])
 
-    # ---- Step 4: Render
-    st.markdown(
-        '<div class="tt-section"><span class="num">4</span> Video ဖန်တီး</div>',
-        unsafe_allow_html=True,
-    )
+    section(4, "Video ဖန်တီး")
     if st.button("🚀 အသံထုတ် + Video ပေါင်း", type="primary", use_container_width=True):
         wd, vdur = st.session_state["wd"], st.session_state["vdur"]
         src = os.path.join(wd, "src.mp4")
@@ -1226,7 +1050,7 @@ if st.session_state.get("units"):
         n = len(units)
         empty = [i for i, t in enumerate(my_list) if not t.strip()]
         if empty:
-            st.error(f"မြန်မာစာသား မဖြည့်ရသေးတဲ့ စာကြောင်း: {empty[:20]}")
+            st.error(f"မဖြည့်ရသေးတဲ့ စာကြောင်း: {empty[:20]}")
             st.stop()
         try:
             T = {}
@@ -1258,7 +1082,7 @@ if st.session_state.get("units"):
                         except Exception as ex:
                             if attempt == 3:
                                 raise RuntimeError(
-                                    f"Edge TTS မအောင်မြင်ပါ (စာကြောင်း #{i}): {ex}\n\n{my_list[i]}")
+                                    f"Edge TTS fail (#{i}): {ex}\n\n{my_list[i]}")
                             time.sleep(1.5)
                 sh(["ffmpeg", "-y", "-i", raw_audio, "-af", TRIM, "-ar", "44100", "-ac", "1", wav])
                 return i, wav_dur(wav), bool(used)
@@ -1267,7 +1091,7 @@ if st.session_state.get("units"):
             vox_ok = 0
             workers = 1 if vox is not None else tts_workers
             t_a = time.time()
-            with st.status("🔊 မြန်မာအသံ ထုတ်နေတယ်...", expanded=True) as tst:
+            with st.status("🔊 TTS...", expanded=True) as tst:
                 bar = st.progress(0.0)
                 done = 0
                 with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -1283,12 +1107,12 @@ if st.session_state.get("units"):
                         for f_ in futs:
                             f_.cancel()
                         raise
-                T["🔊 အသံထုတ် (TTS)"] = time.time() - t_a
-                msg = f"🔊 အသံ ပြီးပြီ · {fmt_t(T['🔊 အသံထုတ် (TTS)'])}"
+                T["🔊 TTS"] = time.time() - t_a
+                msg = f"✅ TTS · {fmt_t(T['🔊 TTS'])}"
                 if vox is not None:
-                    msg += f" (VoxCPM: {vox_ok}/{n})"
+                    msg += f" (VoxCPM {vox_ok}/{n})"
                     if vox_ok < n and vox.last_err:
-                        st.caption(f"Vox error: {vox.last_err}")
+                        st.caption(f"Vox: {vox.last_err}")
                 tst.update(label=msg, state="complete")
 
             t_a = time.time()
@@ -1298,7 +1122,7 @@ if st.session_state.get("units"):
                     f.write(f"file '{wd}/a{i:04d}.wav'\n")
             allwav = f"{wd}/all.wav"
             sh(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", allwav])
-            T["🔗 အသံ ပေါင်း"] = time.time() - t_a
+            T["🔗 အသံပေါင်း"] = time.time() - t_a
 
             bounds = [0.0] + [(units[i]["end"] + units[i + 1]["start"]) / 2
                               for i in range(n - 1)] + [vdur]
@@ -1324,16 +1148,15 @@ if st.session_state.get("units"):
                     t0 += durs[i]
 
             t_a = time.time()
-            with st.status("🎬 Video render...", expanded=True) as rst:
+            with st.status("🎬 Render...", expanded=True) as rst:
                 bar = st.progress(0.0)
                 final = f"{wd}/final.mp4"
                 render_final(src, allwav, final, plan, cum, height, subs,
                              font_path if use_sub else None, sub_size, sub_pos,
                              use_neon, neon_th, neon_speed, flip, zoom, sub_style,
                              preset=preset, progress=bar)
-                T["🎬 Video render"] = time.time() - t_a
-                rst.update(label=f"🎬 Render ပြီး ({cum:.1f}s / မူရင်း {vdur:.1f}s) · "
-                                 f"{fmt_t(T['🎬 Video render'])}", state="complete")
+                T["🎬 Render"] = time.time() - t_a
+                rst.update(label=f"✅ {cum:.1f}s · {fmt_t(T['🎬 Render'])}", state="complete")
             T["⏱️ စုစုပေါင်း"] = time.time() - t_all
             st.session_state["t2"] = T
 
@@ -1342,20 +1165,20 @@ if st.session_state.get("units"):
         except Exception as ex:
             st.error(f"Error: {ex}")
 
-# ---- Result (TikTok card style)
+# ---- Result
 if st.session_state.get("result"):
     mb = len(st.session_state["result"]) / 1e6
     st.markdown(
         f"""
-        <div class="tt-result">
-            <div class="title">🎉 ရလဒ် အသင့်ဖြစ်ပါပြီ</div>
-            <div class="meta">📦 {mb:.1f} MB · Ready to share</div>
+        <div class="result-card">
+            <div class="title">✅ ရလဒ် အသင့်</div>
+            <div class="meta">📦 {mb:.1f} MB</div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    if st.toggle("▶️ Video ကြည့်မယ်", value=False, key="show_vid"):
+    if st.toggle("▶️ Video ကြည့်", value=False, key="show_vid"):
         st.video(st.session_state["result"])
 
     _tt = {}
@@ -1369,24 +1192,10 @@ if st.session_state.get("result"):
                        use_container_width=True, on_click=cleanup_after_download)
 
     if st.session_state.get("cleaned"):
-        st.caption("🧹 Script & upload ဖျက်ပြီးပါပြီ")
+        st.caption("🧹 ဖျက်ပြီးပါပြီ")
 
     if st.button("🗑️ အသစ်ပြန်စ", use_container_width=True):
         reset_job()
         cleanup_uploads()
         st.session_state.pop("cleaned", None)
         st.rerun()
-
-# ---- Floating action bar (TikTok style, bottom)
-st.markdown(
-    """
-    <div class="tt-fab">
-        <div class="btn active">🏠 Home</div>
-        <div class="btn">🔍 Discover</div>
-        <div class="btn">➕ Create</div>
-        <div class="btn">📥 Inbox</div>
-        <div class="btn">👤 Me</div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
