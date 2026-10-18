@@ -18,7 +18,7 @@ import numpy as np
 import streamlit as st
 from PIL import Image, ImageDraw, ImageFont, features
 
-st.set_page_config(page_title="Recap → Myanmar", page_icon="🎙️", layout="wide")
+st.set_page_config(page_title="Recap → Myanmar", page_icon="🎙️", layout="centered")
 
 TARGET, MAXD = 4.2, 5.6
 
@@ -65,6 +65,11 @@ def fmt_t(sec):
 def wav_dur(path):
     with wave.open(path) as w:
         return w.getnframes() / float(w.getframerate())
+
+
+def timing_table(d):
+    rows = "\n".join(f"| {k} | **{fmt_t(v)}** |" for k, v in d.items())
+    return "| အဆင့် | ကြာချိန် |\n|---|---|\n" + rows
 
 
 def clean_my(text):
@@ -125,7 +130,7 @@ class VoxEngine:
         for i in order:
             sp = VOX_SPACES[i]
             if sp["type"] == "burmese" and not self.ref:
-                self.dead.add(i)
+                self.dead.add(i)          # reference audio မပါရင် ဒီ space မသုံးနိုင်
                 continue
             try:
                 cl = self.clients.get(i)
@@ -162,6 +167,7 @@ class VoxEngine:
 # Subtitle PNG (Pillow) helpers
 # ====================================================================
 def find_font():
+    """Myanmar font ရှာ: repo ထဲက MyanmarPadaung.ttf → တခြား .ttf → system (Padauk/Noto Myanmar)"""
     here = os.path.dirname(os.path.abspath(__file__))
     for name in ("MyanmarPadaung.ttf", "fonts/MyanmarPadaung.ttf"):
         pref = os.path.join(here, name)
@@ -203,6 +209,7 @@ def _is_start(c):
 
 
 def split_syll(word):
+    """မြန်မာစာလုံးကို syllable အလိုက်ခွဲ (အတိအကျမဟုတ်၊ ဖြတ်ဖို့လုံလောက်)"""
     idx = [0]
     n = len(word)
     for i in range(1, n):
@@ -236,6 +243,7 @@ def wrap_text(text, font, maxw):
 
 
 def split_for_sub(text, mc=36):
+    """စာတန်းတစ်ခုချင်းစီအတွက် စာသားခွဲ (။ နဲ့ နေရာလွတ် အလိုက်)"""
     sents = [s.strip() for s in re.split(r"(?<=။)", text) if s.strip()]
     parts = []
     for s in sents:
@@ -259,6 +267,7 @@ def split_for_sub(text, mc=36):
 
 def build_overlay(text, W, H, font_path, fs, pos_y, alpha=200, color=(255, 255, 255),
                   bold=0, layout="raqm"):
+    """စာတန်း PNG (RGBA): အနက်ရောင် rounded box (အကျယ်အပြည့်) + ဖြူစာ + အနက်အနားသတ်"""
     font = get_font(font_path, fs, layout)
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
@@ -308,7 +317,7 @@ def blend_overlay(fr, ov):
 # Neon border
 # ====================================================================
 class Neon:
-    BASE = np.array([12, 8, 10], np.float32)
+    BASE = np.array([12, 8, 10], np.float32)         # BGR
     CYAN = np.array([255, 255, 0], np.float32)
     MAGENTA = np.array([110, 30, 255], np.float32)
     IDLE = 0.14
@@ -359,6 +368,8 @@ def zoom_flip(fr, zoom, flip):
 def render_final(src, audio, out, plan, total, height, subs, font_path, fs_pct, pos_y,
                  neon_on, neon_th, neon_speed, flip, zoom, style=None, preset="ultrafast",
                  progress=None, fps_out=30):
+    """Single pass: source frame တစ်ခါဖတ် → smart-sync retime + zoom/flip + neon + စာတန်း → encode တစ်ခါ။
+    decode thread / python processing / ffmpeg encode သုံးခု တစ်ပြိုင်နက် အလုပ်လုပ်။"""
     style = style or {}
     cap = cv2.VideoCapture(src)
     sfps = cap.get(cv2.CAP_PROP_FPS) or 30.0
@@ -392,7 +403,7 @@ def render_final(src, audio, out, plan, total, height, subs, font_path, fs_pct, 
                     ui += 1
                 cs, _d, s0, spd = plan[ui]
                 idx = min(int((s0 + (T - cs) * spd) * sfps + 0.5), stotal - 1)
-                if idx > cur + 90:
+                if idx > cur + 90:                      # ကြီးကြီးကျော်ရင် seek
                     cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
                     cur = idx - 1
                 new = False
@@ -514,13 +525,14 @@ def build_prompt(units):
 
 
 def parse_numbered(text, n):
+    """'[3] စာသား' / '3. စာသား' / '3) စာသား' ပုံစံကို {id: text} ပြောင်း"""
     got = {}
     for line in text.splitlines():
         line = line.strip().strip("*").strip()
         m = re.match(r"^[\[\(#]?\s*(\d+)\s*[\]\)\.:\-–]?\s*(.+)$", line)
         if m and int(m.group(1)) < n:
             got[int(m.group(1))] = m.group(2).strip().strip("*").strip()
-    if not got:
+    if not got:  # နံပါတ်မပါရင် စာကြောင်းအရေအတွက်ညီမှ အစဉ်လိုက်ယူ
         plain = [l.strip() for l in text.splitlines() if l.strip()]
         if len(plain) == n:
             got = {i: plain[i] for i in range(n)}
@@ -542,6 +554,7 @@ def reset_job():
 
 
 def cleanup_uploads():
+    """တင်ထားတဲ့ video file တွေ ဖျက် + uploader ကို reset (VoxCPM reference audio ကို မထိ)"""
     for p in st.session_state.get("up_paths", []):
         try:
             os.remove(p)
@@ -552,6 +565,7 @@ def cleanup_uploads():
 
 
 def cleanup_after_download():
+    """Download နှိပ်ပြီးတာနဲ့: script + uploaded video + work files ဖျက်။ (ရလဒ် video ကို download အတွက် ချန်)"""
     wd = st.session_state.get("wd")
     if wd and os.path.isdir(wd):
         shutil.rmtree(wd, ignore_errors=True)
@@ -562,6 +576,7 @@ def cleanup_after_download():
 
 
 def save_upload(up):
+    """Upload ကို /tmp ထဲ တစ်ခါပဲ သိမ်း (rerun တိုင်း ပြန်မရေး)"""
     key = hashlib.md5(f"{up.name}-{up.size}".encode()).hexdigest()[:12]
     path = f"/tmp/recap_up_{key}.mp4"
     if not os.path.exists(path):
@@ -593,60 +608,45 @@ html, body, [class*="css"] {
 .block-container {
     padding-top: 1.6rem;
     padding-bottom: 4rem;
-    max-width: 1080px;
-}
-
-/* --- Header --- */
-.app-header {
-    padding: 4px 0 18px;
-    border-bottom: 1px solid #1e1e26;
-    margin-bottom: 22px;
-}
-.app-header h1 {
-    margin: 0;
-    font-size: 1.5rem;
-    font-weight: 700;
-    color: #f0f0f5;
-    letter-spacing: 0.2px;
-}
-.app-header p {
-    margin: 4px 0 0;
-    color: #7a7a8c;
-    font-size: 0.85rem;
-}
-
-/* --- Section --- */
-.section {
-    margin: 26px 0 10px;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-}
-.section .num {
-    width: 26px; height: 26px;
-    border-radius: 50%;
-    background: #1a1a22;
-    border: 1px solid #2a2a35;
-    color: #b8b8c8;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 0.8rem;
-    font-weight: 700;
-}
-.section .title {
-    font-size: 1rem;
-    font-weight: 600;
-    color: #e2e2ea;
-}
-.section .hint {
-    color: #6a6a7c;
-    font-size: 0.8rem;
-    margin-left: 4px;
 }
 
 /* --- Buttons --- */
-div.stButton > button,
+div.stButton > button {
+    border-radius: 10px;
+    border: 1px solid #2a2a35;
+    background: #1a1a22;
+    color: #e2e2ea;
+    font-weight: 600;
+    padding: 0.55rem 1rem;
+    transition: background 0.12s ease, border-color 0.12s ease;
+    box-shadow: none;
+}
+div.stButton > button:hover {
+    background: #23232d;
+    border-color: #3a3a48;
+    color: #fff;
+}
+div.stButton > button:disabled {
+    background: #15151b;
+    color: #4a4a58;
+    border-color: #1e1e26;
+}
+div.stButton > button[kind="primary"] {
+    background: #4b5cff;
+    border-color: #4b5cff;
+    color: #fff;
+}
+div.stButton > button[kind="primary"]:hover {
+    background: #3d4ce6;
+    border-color: #3d4ce6;
+}
+div.stButton > button[kind="primary"]:disabled {
+    background: #1e1e26;
+    border-color: #1e1e26;
+    color: #4a4a58;
+}
+
+/* --- Download button --- */
 div.stDownloadButton > button {
     border-radius: 10px;
     border: 1px solid #2a2a35;
@@ -657,32 +657,10 @@ div.stDownloadButton > button {
     transition: background 0.12s ease, border-color 0.12s ease;
     box-shadow: none;
 }
-div.stButton > button:hover,
 div.stDownloadButton > button:hover {
     background: #23232d;
     border-color: #3a3a48;
     color: #fff;
-}
-div.stButton > button:disabled {
-    background: #15151b;
-    color: #4a4a58;
-    border-color: #1e1e26;
-}
-div.stButton > button[kind="primary"],
-div.stDownloadButton > button {
-    background: #4b5cff;
-    border-color: #4b5cff;
-    color: #fff;
-}
-div.stButton > button[kind="primary"]:hover,
-div.stDownloadButton > button:hover {
-    background: #3d4ce6;
-    border-color: #3d4ce6;
-}
-div.stButton > button[kind="primary"]:disabled {
-    background: #1e1e26;
-    border-color: #1e1e26;
-    color: #4a4a58;
 }
 
 /* --- Inputs --- */
@@ -709,11 +687,6 @@ div[data-baseweb="select"] > div {
 }
 div[data-baseweb="popover"] {
     background: #1a1a22 !important;
-}
-
-/* --- Radio / toggle --- */
-.stRadio > div {
-    gap: 6px;
 }
 
 /* --- Code block --- */
@@ -752,26 +725,6 @@ section[data-testid="stFileUploaderDropzone"]:hover {
     background: #4b5cff !important;
 }
 
-/* --- Metrics --- */
-.stat-row {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    margin: 8px 0 16px;
-}
-.stat {
-    background: #15151b;
-    border: 1px solid #22222b;
-    border-radius: 8px;
-    padding: 6px 12px;
-    font-size: 0.8rem;
-    color: #8a8a9c;
-}
-.stat b {
-    color: #e2e2ea;
-    font-weight: 600;
-}
-
 /* --- Sidebar --- */
 section[data-testid="stSidebar"] {
     background: #0b0b0f;
@@ -788,92 +741,70 @@ hr {
     border-color: #1e1e26 !important;
 }
 
-/* --- Result block --- */
-.result-block {
-    background: #13131a;
-    border: 1px solid #22222b;
-    border-radius: 12px;
-    padding: 16px 18px;
-    margin-top: 16px;
-}
-
 /* hide streamlit branding */
 #MainMenu, footer { visibility: hidden; }
 </style>
 """, unsafe_allow_html=True)
 
+# ---- ခေါင်းစဉ်စာသား (Recap → Myanmar) ကို ဖျောက်ထားသည် ----
+# st.title("🎙️ Recap → Myanmar")
+# st.caption("Whisper → Gemini → Edge TTS / VoxCPM → Smart Sync → PNG စာတန်း + Neon border")
 
-# ---------- Header ----------
-st.markdown("""
-<div class="app-header">
-  <h1>🎙️ Recap → Myanmar</h1>
-  <p>Whisper · Gemini · Edge TTS / VoxCPM · Smart Sync · PNG စာတန်း · Neon Border</p>
-</div>
-""", unsafe_allow_html=True)
-
-
-# ---------- Sidebar : Settings ----------
-with st.sidebar:
-    st.markdown("## ⚙️ Settings")
-    src_lang = st.selectbox("မူရင်းဘာသာ", ["auto", "en", "zh", "ko", "ja", "hi", "th", "vi", "id"])
-    wsize = st.selectbox("Whisper model", ["tiny", "base", "small"], index=1,
+with st.expander("⚙️ Settings", expanded=False):
+    c1, c2 = st.columns(2)
+    src_lang = c1.selectbox("မူရင်းဘာသာ", ["auto", "en", "zh", "ko", "ja", "hi", "th", "vi", "id"])
+    wsize = c2.selectbox("Whisper model", ["tiny", "base", "small"], index=1,
                          help="small = တိကျ/နှေး၊ tiny = မြန်/အမှားများ")
-    height = st.select_slider("Output height", [360, 480, 720, 1080], value=720)
-    max_speed = st.slider("ရုပ် အမြန်ဆုံး ဆ", 1.0, 2.0, 1.25, 0.05)
+    c3, c4 = st.columns(2)
+    height = c3.select_slider("Output height", [360, 480, 720, 1080], value=720)
+    max_speed = c4.slider("ရုပ် အမြန်ဆုံး ဆ", 1.0, 2.0, 1.25, 0.05)
     max_min = st.slider("Video အရှည် ကန့်သတ် (မိနစ်)", 1, 15, 6)
-    preset = st.selectbox("Render speed", ["ultrafast", "superfast", "veryfast"], index=0)
+    preset = st.selectbox("Render speed", ["ultrafast", "superfast", "veryfast"], index=0,
+                          help="ultrafast = အမြန်ဆုံး (file အနည်းငယ်ကြီး)၊ veryfast = file သေး/နှေးနည်းနည်း")
 
-    st.markdown("---")
-    st.markdown("## 🔊 အသံ (Voice)")
+with st.expander("🔊 အသံ (Voice)", expanded=False):
     engine = st.radio("TTS engine",
-                      ["Edge TTS", "VoxCPM (မရရင် Edge TTS auto)"])
+                      ["Edge TTS", "VoxCPM (မရရင် Edge TTS auto)"], horizontal=False)
     voice = st.selectbox("Edge voice", ["my-MM-ThihaNeural", "my-MM-NilarNeural"],
-                         format_func=lambda v: "🧑 Thiha (ယောက်ျား)" if "Thiha" in v else "👩 Nilar (မိန်းမ)")
+                         format_func=lambda v: "Thiha (ယောက်ျား)" if "Thiha" in v else "Nilar (မိန်းမ)")
     rate_n = st.slider("Edge speed %", -50, 100, 0, 5)
-    tts_workers = st.slider("TTS တစ်ပြိုင်နက်", 1, 10, 6)
+    tts_workers = st.slider("TTS တစ်ပြိုင်နက် အရေအတွက်", 1, 10, 6,
+                            help="များရင်မြန်တယ်။ Edge က error ပေးရင် လျှော့ပါ (VoxCPM မှာ 1 ပဲသုံး)")
     ref_up = None
     if engine.startswith("Vox"):
         ref_up = st.file_uploader("🎤 Reference audio (optional)", type=["wav", "mp3", "m4a"])
-        st.caption("VoxCPM Space တွေ queue/sleep ဖြစ်တတ်တယ်။")
+        st.caption("VoxCPM Space တွေက queue/sleep ဖြစ်တတ်တယ်။ မရရင် စာကြောင်းတစ်ခုချင်း Edge TTS နဲ့ အစားထိုးမယ်။")
 
-    st.markdown("---")
-    st.markdown("## 🎨 စာတန်း + Neon")
+with st.expander("🎨 စာတန်း (PNG) + Neon", expanded=False):
     use_sub = st.toggle("PNG စာတန်းထည့်", value=True)
-    sub_size = st.slider("စာအရွယ် (% width)", 3.0, 12.0, 7.0, 0.5)
-    sub_pos = st.slider("နေရာ (0=အပေါ် 100=အောက်)", 0, 100, 90, 1)
+    c5, c6 = st.columns(2)
+    sub_size = c5.slider("စာအရွယ် (% of width)", 3.0, 12.0, 7.0, 0.5)
+    sub_pos = c6.slider("နေရာ (0=အပေါ် 100=အောက်)", 0, 100, 90, 1)
     use_neon = st.toggle("Neon border", value=True)
     zoom = st.slider("Zoom", 1.0, 1.25, 1.0, 0.01)
-
-    st.markdown("---")
     font_path = find_font()
     if not font_path:
-        st.warning("Myanmar font မတွေ့ပါ။")
+        st.warning("Myanmar font မတွေ့ပါ။ MyanmarPadaung.ttf ကို repo root မှာ ထည့်ပါ။")
     if not features.check("raqm"):
-        st.warning("raqm မရှိပါ — မြန်မာစာ ပုံစံ မမှန်နိုင်ပါ။")
+        st.warning("raqm မရှိလို့ မြန်မာစာ ပုံစံ မမှန်နိုင်ပါ (packages.txt ထဲ libraqm0 ပါစေ)")
 
 rate = f"{rate_n:+d}%"
 
-# ---- internal constants
-neon_th, neon_speed, flip = 10, 0.4, True
-sub_style = {"alpha": int(0.8 * 255), "color": (255, 255, 255), "bold": 0, "layout": "raqm"}
+# ---- ပုံသေတန်ဖိုးများ (UI မှာ မပြ၊ နောက်ကွယ်မှာ အလုပ်လုပ်)
+neon_th = 10
+neon_speed = 0.4
+flip = True
+sub_style = {
+    "alpha": int(0.8 * 255),          # နောက်ခံ မည်း
+    "color": (255, 255, 255),         # စာအဖြူ
+    "bold": 0,
+    "layout": "raqm",
+}
 proxy = secret("EDGE_TTS_PROXY") or None
 hf_token = secret("HF_TOKEN") or None
 
-
-# ====================================================================
-# STEP 1 — Upload
-# ====================================================================
-st.markdown("""
-<div class="section">
-  <div class="num">1</div>
-  <div class="title">Video တင်ပါ</div>
-  <div class="hint">mp4 / mov / mkv / webm / m4v</div>
-</div>
-""", unsafe_allow_html=True)
-
 up = st.file_uploader("Video ရွေးပါ", type=["mp4", "mov", "mkv", "webm", "m4v"],
-                      key=f"vid_{st.session_state.get('up_key', 0)}",
-                      label_visibility="collapsed")
+                      key=f"vid_{st.session_state.get('up_key', 0)}")
 
 if up:
     try:
@@ -881,35 +812,14 @@ if up:
         pv = make_preview(up_path, height, "စာတန်းထိုး နမူနာ စာသား ဖြစ်ပါတယ်။", font_path,
                           sub_size, sub_pos, use_neon, neon_th, neon_speed, flip, zoom, sub_style)
         if pv is not None:
-            c1, c2 = st.columns([3, 1])
-            with c1:
-                st.image(pv, caption="Preview", use_container_width=True)
-            with c2:
-                st.markdown(f"""
-<div class="stat-row" style="flex-direction:column;gap:6px;">
-  <div class="stat">📁 <b>{up.name[:22]}</b></div>
-  <div class="stat">📦 <b>{up.size/1e6:.1f} MB</b></div>
-  <div class="stat">🖼️ <b>{height}p</b></div>
-  <div class="stat">🎨 <b>{'Neon ON' if use_neon else 'Neon OFF'}</b></div>
-</div>
-""", unsafe_allow_html=True)
+            st.image(pv, caption="Preview", use_container_width=True)
     except Exception as ex:  # noqa: BLE001
         st.caption(f"preview မရ: {str(ex)[:100]}")
 
-
 # ====================================================================
-# STEP 2 — Whisper
+# Stage 1 : Whisper + Gemini
 # ====================================================================
-st.markdown("""
-<div class="section">
-  <div class="num">2</div>
-  <div class="title">စာသားထုတ် (Whisper)</div>
-  <div class="hint">ဘာသာစကား ဖော်ထုတ် → စာသားခွဲ</div>
-</div>
-""", unsafe_allow_html=True)
-
-if st.button("🎧 စာသားထုတ်", type="primary", disabled=not up,
-             use_container_width=True, key="btn_whisper"):
+if st.button("1️⃣ စာသားထုတ်", type="primary", disabled=not up, use_container_width=True):
     reset_job()
     st.session_state.pop("cleaned", None)
     wd = tempfile.mkdtemp(prefix="recap_")
@@ -920,7 +830,8 @@ if st.button("🎧 စာသားထုတ်", type="primary", disabled=not up
     try:
         vdur = dur(src)
         if vdur > max_min * 60:
-            st.error(f"Video က {vdur/60:.1f} မိနစ်ရှိတယ်။ {max_min} မိနစ်အောက်ပဲ လက်ခံတယ်")
+            st.error(f"Video က {vdur/60:.1f} မိနစ်ရှိတယ်။ {max_min} မိနစ်အောက်ပဲ လက်ခံတယ် "
+                     "(Settings မှာ ပြောင်းလို့ရ)")
             st.stop()
         st.session_state["vdur"] = vdur
 
@@ -930,24 +841,25 @@ if st.button("🎧 စာသားထုတ်", type="primary", disabled=not up
             wav = os.path.join(wd, "audio16k.wav")
             sh(["ffmpeg", "-y", "-i", src, "-vn", "-ac", "1", "-ar", "16000", wav])
             with wave.open(wav) as wf:
-                audio = np.frombuffer(wf.readframes(wf.getnframes()),
-                                      dtype=np.int16).astype(np.float32) / 32768.0
+                audio = np.frombuffer(
+                    wf.readframes(wf.getnframes()), dtype=np.int16
+                ).astype(np.float32) / 32768.0
             T1["🎞️ Audio ထုတ်"] = time.time() - t_a
             t_a = time.time()
             wm = load_whisper(wsize)
-            T1["📦 Whisper model"] = time.time() - t_a
+            T1["📦 Whisper model ဖွင့်"] = time.time() - t_a
             t_a = time.time()
             segs, info = wm.transcribe(
                 audio, language=None if src_lang == "auto" else src_lang,
                 vad_filter=True, beam_size=1, condition_on_previous_text=False)
-            st.write(f"🌐 ဘာသာစကား: **{info.language}** ({info.language_probability:.0%})")
+            st.write(f"ဘာသာစကား: **{info.language}** ({info.language_probability:.0%})")
             bar = st.progress(0.0)
             raw = []
             for s in segs:
                 if s.text.strip():
                     raw.append((s.start, s.end, s.text.strip()))
                 bar.progress(min(s.end / vdur, 1.0))
-            T1["🎧 Whisper စာသား"] = time.time() - t_a
+            T1["🎧 Whisper စာသားပြောင်း"] = time.time() - t_a
             units = []
             for s, e, t in raw:
                 if units and (units[-1][1] - units[-1][0]) < TARGET and (e - units[-1][0]) <= MAXD:
@@ -957,8 +869,7 @@ if st.button("🎧 စာသားထုတ်", type="primary", disabled=not up
             if not units:
                 stt.update(label="စကားပြောသံ မတွေ့ပါ", state="error")
                 st.stop()
-            stt.update(label=f"✅ အပိုင်း {len(units)} ခု ရပြီ · {fmt_t(sum(T1.values()))}",
-                       state="complete")
+            stt.update(label=f"🎧 အပိုင်း {len(units)} ခု ရပြီ · {fmt_t(sum(T1.values()))}", state="complete")
             st.session_state["t1"] = T1
 
         st.session_state["units"] = [
@@ -970,35 +881,22 @@ if st.button("🎧 စာသားထုတ်", type="primary", disabled=not up
     except Exception as ex:  # noqa: BLE001
         st.error(f"Error: {ex}")
 
-
 # ====================================================================
-# STEP 3 — Translate + TTS + Render
+# Edit + Stage 2 : TTS → Smart Sync → Overlay
 # ====================================================================
 if st.session_state.get("units"):
     units = st.session_state["units"]
-
     if st.session_state.get("t1"):
-        pills = "".join(
-            f'<div class="stat">{k} <b>{fmt_t(v)}</b></div>'
-            for k, v in st.session_state["t1"].items())
-        st.markdown(f'<div class="stat-row">{pills}</div>', unsafe_allow_html=True)
-
-    st.markdown("""
-<div class="section">
-  <div class="num">3</div>
-  <div class="title">ဘာသာပြန် (Gemini)</div>
-  <div class="hint">Copy → Gemini → paste → Apply</div>
-</div>
-""", unsafe_allow_html=True)
+        st.caption("⏱️ " + " · ".join(f"{k} {fmt_t(v)}" for k, v in st.session_state["t1"].items()))
 
     if st.session_state.get("manual"):
-        st.caption("① အောက်က prompt ကို Copy  ② Gemini app မှာ paste  ③ ရလဒ်ကို အောက်မှာ paste  ④ Apply")
+        st.subheader("📋 Gemini မှာ ဘာသာပြန်ရန်")
+        st.caption("① အောက်က စာသားကို Copy (ညာထောင့် icon) → ② Gemini app မှာ paste → "
+                   "③ ရလဒ်ကို အောက်က ကွက်ထဲ paste → ④ Apply")
         st.code(build_prompt(units), language=None)
-
         pasted = st.text_area("Gemini ရလဒ် ဒီမှာ paste", height=200, key="gem_paste",
                               placeholder="[0] မြန်မာစာ...\n[1] မြန်မာစာ...")
-
-        if st.button("✅ Apply", use_container_width=True, key="btn_apply"):
+        if st.button("✅ Apply (စာသား ဖြည့်)", use_container_width=True):
             got = parse_numbered(pasted, len(units))
             for i, t in got.items():
                 units[i]["my"] = clean_my(t)
@@ -1011,16 +909,7 @@ if st.session_state.get("units"):
         if st.session_state.get("apply_msg"):
             st.info(st.session_state["apply_msg"])
 
-    st.markdown("""
-<div class="section">
-  <div class="num">4</div>
-  <div class="title">အသံ + Video</div>
-  <div class="hint">TTS → Smart Sync → စာတန်း + Neon → MP4</div>
-</div>
-""", unsafe_allow_html=True)
-
-    if st.button("🚀 အသံထုတ် + Video ပေါင်း", type="primary",
-                 use_container_width=True, key="btn_render"):
+    if st.button("2️⃣ အသံထုတ် + Video ပေါင်း", type="primary", use_container_width=True):
         wd, vdur = st.session_state["wd"], st.session_state["vdur"]
         src = os.path.join(wd, "src.mp4")
         my_list = [clean_my(u["my"]) for u in units]
@@ -1033,6 +922,7 @@ if st.session_state.get("units"):
             T = {}
             t_all = time.time()
 
+            # ---------------- TTS (တစ်ပြိုင်နက်)
             vox = None
             if engine.startswith("Vox"):
                 ref_path = None
@@ -1059,10 +949,9 @@ if st.session_state.get("units"):
                         except Exception as ex:  # noqa: BLE001
                             if attempt == 3:
                                 raise RuntimeError(
-                                    f"Edge TTS မအောင်မြင်ပါ (#{i}): {ex}\n\n{my_list[i]}")
+                                    f"Edge TTS မအောင်မြင်ပါ (စာကြောင်း #{i}): {ex}\n\n{my_list[i]}")
                             time.sleep(1.5)
-                sh(["ffmpeg", "-y", "-i", raw_audio, "-af", TRIM,
-                    "-ar", "44100", "-ac", "1", wav])
+                sh(["ffmpeg", "-y", "-i", raw_audio, "-af", TRIM, "-ar", "44100", "-ac", "1", wav])
                 return i, wav_dur(wav), bool(used)
 
             durs = [0.0] * n
@@ -1085,24 +974,25 @@ if st.session_state.get("units"):
                         for f_ in futs:
                             f_.cancel()
                         raise
-                T["🔊 TTS"] = time.time() - t_a
-                msg = f"🔊 အသံ ပြီးပြီ · {fmt_t(T['🔊 TTS'])}"
+                T["🔊 အသံထုတ် (TTS)"] = time.time() - t_a
+                msg = f"🔊 အသံ ပြီးပြီ · {fmt_t(T['🔊 အသံထုတ် (TTS)'])}"
                 if vox is not None:
                     msg += f" (VoxCPM: {vox_ok}/{n})"
                     if vox_ok < n and vox.last_err:
                         st.caption(f"Vox error: {vox.last_err}")
                 tst.update(label=msg, state="complete")
 
+            # ---------------- အသံ ပေါင်း
             t_a = time.time()
             lst = f"{wd}/alist.txt"
             with open(lst, "w") as f:
                 for i in range(n):
                     f.write(f"file '{wd}/a{i:04d}.wav'\n")
             allwav = f"{wd}/all.wav"
-            sh(["ffmpeg", "-y", "-f", "concat", "-safe", "0",
-                "-i", lst, "-c", "copy", allwav])
-            T["🔗 အသံပေါင်း"] = time.time() - t_a
+            sh(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", allwav])
+            T["🔗 အသံ ပေါင်း"] = time.time() - t_a
 
+            # ---------------- Smart Sync plan + Render (single pass)
             bounds = [0.0] + [(units[i]["end"] + units[i + 1]["start"]) / 2
                               for i in range(n - 1)] + [vdur]
             plan, cum = [], 0.0
@@ -1127,17 +1017,17 @@ if st.session_state.get("units"):
                     t0 += durs[i]
 
             t_a = time.time()
-            with st.status("🎬 Video render...", expanded=True) as rst:
+            with st.status("🎬 Video render (Smart Sync + စာတန်း + Neon)...", expanded=True) as rst:
                 bar = st.progress(0.0)
                 final = f"{wd}/final.mp4"
                 render_final(src, allwav, final, plan, cum, height, subs,
                              font_path if use_sub else None, sub_size, sub_pos,
                              use_neon, neon_th, neon_speed, flip, zoom, sub_style,
                              preset=preset, progress=bar)
-                T["🎬 Render"] = time.time() - t_a
+                T["🎬 Video render"] = time.time() - t_a
                 rst.update(label=f"🎬 Render ပြီး ({cum:.1f}s / မူရင်း {vdur:.1f}s) · "
-                                 f"{fmt_t(T['🎬 Render'])}", state="complete")
-            T["⏱️ စုစုပေါင်း"] = time.time() - t_all
+                                 f"{fmt_t(T['🎬 Video render'])}", state="complete")
+            T["⏱️ စုစုပေါင်း (အဆင့် 2)"] = time.time() - t_all
             st.session_state["t2"] = T
 
             with open(final, "rb") as f:
@@ -1145,44 +1035,26 @@ if st.session_state.get("units"):
         except Exception as ex:  # noqa: BLE001
             st.error(f"Error: {ex}")
 
-
 # ====================================================================
-# RESULT
+# Result
 # ====================================================================
 if st.session_state.get("result"):
-    st.markdown("""
-<div class="section">
-  <div class="num">✓</div>
-  <div class="title">ရလဒ်</div>
-  <div class="hint">MP4 ကို download လုပ်ပြီး ကြည့်နိုင်ပါတယ်</div>
-</div>
-""", unsafe_allow_html=True)
-
+    st.subheader("✅ ရလဒ်")
     mb = len(st.session_state["result"]) / 1e6
-
+    st.caption(f"📦 File အရွယ်အစား: {mb:.1f} MB")
+    if st.toggle("▶️ ဒီမှာ video ကြည့်မယ် (ဖိုင်ကြီးရင်/net နှေးရင် ကြာတတ်)", value=False, key="show_vid"):
+        st.video(st.session_state["result"])
     _tt = {}
     _tt.update(st.session_state.get("t1") or {})
     _tt.update(st.session_state.get("t2") or {})
     if _tt:
-        pills = "".join(f'<div class="stat">{k} <b>{fmt_t(v)}</b></div>'
-                        for k, v in _tt.items())
-        st.markdown(f'<div class="stat-row">{pills}</div>', unsafe_allow_html=True)
-
-    st.markdown(f'<div class="stat">📦 File အရွယ်အစား <b>{mb:.1f} MB</b></div>',
-                unsafe_allow_html=True)
-    st.write("")
-
-    if st.toggle("▶️ ဒီမှာ video ကြည့်မယ်", value=False, key="show_vid"):
-        st.video(st.session_state["result"])
-
+        st.markdown("**⏱️ ဘယ်အပိုင်း ဘယ်လောက်ကြာလဲ**\n\n" + timing_table(_tt))
     st.download_button("⬇️ Download MP4", st.session_state["result"],
                        file_name="final_myanmar.mp4", mime="video/mp4",
                        use_container_width=True, on_click=cleanup_after_download)
-
     if st.session_state.get("cleaned"):
         st.caption("🧹 Script နဲ့ တင်ထားတဲ့ video ကို ဖျက်ပြီးပါပြီ")
-
-    if st.button("🗑️ အသစ်ပြန်စ", use_container_width=True, key="btn_reset"):
+    if st.button("🗑️ အသစ်ပြန်စ", use_container_width=True):
         reset_job()
         cleanup_uploads()
         st.session_state.pop("cleaned", None)
