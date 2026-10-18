@@ -23,7 +23,7 @@ from PIL import Image, ImageDraw, ImageFont, features
 # ====================================================================
 st.set_page_config(
     page_title="Recap → Myanmar",
-    page_icon="🎬",
+    page_icon="🎵",
     layout="centered",
     initial_sidebar_state="collapsed",
 )
@@ -42,326 +42,445 @@ TRIM = (
 
 
 # ====================================================================
-# 🎨 CUSTOM CSS — Dark Neon Theme
+# 🎵 TIKTOK STYLE CSS
 # ====================================================================
-def inject_css():
+def inject_tiktok_css():
     st.markdown(
         """
         <style>
-        /* ---------- Root / Background ---------- */
         :root {
-            --neon-cyan: #00e5ff;
-            --neon-magenta: #ff2d95;
-            --neon-purple: #a855f7;
-            --bg-0: #0a0a12;
-            --bg-1: #12121f;
-            --bg-2: #1a1a2e;
-            --text: #e8e8f0;
-            --muted: #8b8ba7;
+            --tt-bg: #000000;
+            --tt-card: #121212;
+            --tt-card-2: #1c1c1e;
+            --tt-border: #2a2a2d;
+            --tt-text: #ffffff;
+            --tt-muted: #8a8a8e;
+            --tt-cyan: #25f4ee;
+            --tt-pink: #fe2c55;
+            --tt-red: #ff0050;
+            --tt-gray: #161823;
         }
 
+        /* ---------- Hide Streamlit chrome ---------- */
+        #MainMenu, footer, header { visibility: hidden; }
+        .stDeployButton { display: none; }
+        div[data-testid="stToolbar"] { display: none; }
+        div[data-testid="stDecoration"] { display: none; }
+
+        /* ---------- App background ---------- */
         .stApp {
-            background: radial-gradient(circle at 15% 15%, #1a0a2e 0%, transparent 45%),
-                        radial-gradient(circle at 85% 85%, #0a1a2e 0%, transparent 45%),
-                        linear-gradient(135deg, var(--bg-0) 0%, var(--bg-1) 100%);
-            background-attachment: fixed;
-            color: var(--text);
+            background: var(--tt-bg);
+            color: var(--tt-text);
         }
-
-        /* Subtle grid overlay */
-        .stApp::before {
-            content: "";
-            position: fixed;
-            inset: 0;
-            background-image:
-                linear-gradient(rgba(0,229,255,0.03) 1px, transparent 1px),
-                linear-gradient(90deg, rgba(0,229,255,0.03) 1px, transparent 1px);
-            background-size: 40px 40px;
-            pointer-events: none;
-            z-index: 0;
-        }
-
         .main .block-container {
-            padding-top: 2rem;
-            max-width: 780px;
-            position: relative;
-            z-index: 1;
+            padding: 0.5rem 0.8rem 6rem 0.8rem;
+            max-width: 480px;
         }
 
         /* ---------- Typography ---------- */
-        h1, h2, h3, h4 { color: var(--text) !important; letter-spacing: -0.02em; }
-        p, span, label, div { color: var(--text); }
+        h1, h2, h3, h4, h5, h6 { color: var(--tt-text) !important; }
+        p, span, label, div { color: var(--tt-text); }
+        .stCaption, [data-testid="stCaptionContainer"] { color: var(--tt-muted) !important; }
+        a { color: var(--tt-cyan); }
 
-        /* ---------- Title (hero) ---------- */
-        .hero {
-            text-align: center;
-            padding: 2rem 1rem 1.5rem;
-            margin-bottom: 1.5rem;
+        /* ---------- Top bar (TikTok style) ---------- */
+        .tt-topbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.4rem 0.2rem 0.9rem;
+            border-bottom: 1px solid var(--tt-border);
+            margin-bottom: 0.9rem;
+            position: sticky;
+            top: 0;
+            background: var(--tt-bg);
+            z-index: 100;
         }
-        .hero h1 {
-            font-size: 2.6rem !important;
-            font-weight: 800 !important;
-            background: linear-gradient(90deg, var(--neon-cyan), var(--neon-magenta));
+        .tt-topbar .logo {
+            font-size: 1.35rem;
+            font-weight: 900;
+            letter-spacing: -0.04em;
+            background: linear-gradient(90deg, var(--tt-cyan), var(--tt-pink));
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
             background-clip: text;
-            margin: 0 !important;
-            filter: drop-shadow(0 0 20px rgba(0,229,255,0.35));
-            animation: glowPulse 3s ease-in-out infinite alternate;
+            filter: drop-shadow(2px 2px 0 rgba(254,44,85,0.4));
         }
-        .hero p {
-            color: var(--muted) !important;
-            font-size: 0.95rem;
-            margin-top: 0.5rem;
-            letter-spacing: 0.02em;
-        }
-        @keyframes glowPulse {
-            from { filter: drop-shadow(0 0 14px rgba(0,229,255,0.3)); }
-            to   { filter: drop-shadow(0 0 28px rgba(255,45,149,0.45)); }
+        .tt-topbar .icons {
+            display: flex;
+            gap: 1rem;
+            font-size: 1.2rem;
         }
 
-        /* ---------- Buttons ---------- */
+        /* ---------- Tab bar ---------- */
+        .tt-tabs {
+            display: flex;
+            justify-content: center;
+            gap: 1.8rem;
+            padding: 0.6rem 0 0.9rem;
+            border-bottom: 1px solid var(--tt-border);
+            margin-bottom: 1rem;
+        }
+        .tt-tab {
+            font-size: 0.88rem;
+            font-weight: 600;
+            color: var(--tt-muted);
+            padding-bottom: 0.4rem;
+            position: relative;
+            cursor: pointer;
+        }
+        .tt-tab.active {
+            color: var(--tt-text);
+        }
+        .tt-tab.active::after {
+            content: "";
+            position: absolute;
+            bottom: -0.9rem;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 60%;
+            height: 3px;
+            background: var(--tt-text);
+            border-radius: 3px;
+        }
+
+        /* ---------- Section header (TikTok style) ---------- */
+        .tt-section {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin: 1.2rem 0 0.7rem;
+            font-weight: 700;
+            font-size: 1.02rem;
+        }
+        .tt-section .num {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--tt-cyan), var(--tt-pink));
+            color: #000;
+            font-size: 0.75rem;
+            font-weight: 900;
+        }
+
+        /* ---------- Buttons (TikTok pill) ---------- */
         .stButton > button {
-            background: linear-gradient(135deg, rgba(0,229,255,0.15), rgba(168,85,247,0.15)) !important;
-            border: 1px solid rgba(0,229,255,0.45) !important;
-            border-radius: 14px !important;
-            color: var(--text) !important;
-            font-weight: 600 !important;
-            padding: 0.65rem 1.4rem !important;
-            transition: all 0.25s ease !important;
-            backdrop-filter: blur(8px);
+            background: var(--tt-card-2) !important;
+            border: 1px solid var(--tt-border) !important;
+            border-radius: 12px !important;
+            color: var(--tt-text) !important;
+            font-weight: 700 !important;
+            padding: 0.7rem 1rem !important;
+            transition: all 0.15s ease !important;
             width: 100%;
+            font-size: 0.95rem !important;
         }
         .stButton > button:hover {
-            border-color: var(--neon-cyan) !important;
-            box-shadow: 0 0 22px rgba(0,229,255,0.35), inset 0 0 12px rgba(0,229,255,0.08) !important;
-            transform: translateY(-2px);
+            background: #2a2a2d !important;
+            border-color: #3a3a3d !important;
+            transform: scale(1.01);
+        }
+        .stButton > button:active {
+            transform: scale(0.98);
         }
         .stButton > button:disabled {
             opacity: 0.35 !important;
-            filter: grayscale(0.6);
         }
 
-        /* ---------- Primary button ---------- */
+        /* ---------- Primary button (TikTok red) ---------- */
         .stButton > button[kind="primary"] {
-            background: linear-gradient(135deg, var(--neon-cyan), var(--neon-purple)) !important;
-            color: #05050a !important;
-            border: none !important;
-            box-shadow: 0 4px 24px rgba(0,229,255,0.35) !important;
+            background: var(--tt-pink) !important;
+            border: 1px solid var(--tt-pink) !important;
+            color: #fff !important;
+            font-weight: 800 !important;
+            box-shadow: 0 2px 12px rgba(254,44,85,0.35) !important;
         }
         .stButton > button[kind="primary"]:hover {
-            box-shadow: 0 6px 32px rgba(255,45,149,0.5) !important;
-            transform: translateY(-2px);
+            background: var(--tt-red) !important;
+            box-shadow: 0 4px 20px rgba(254,44,85,0.5) !important;
+        }
+        .stButton > button[kind="primary"]:active {
+            transform: scale(0.97);
         }
 
         /* ---------- Download button ---------- */
         .stDownloadButton > button {
-            background: linear-gradient(135deg, rgba(0,229,255,0.2), rgba(168,85,247,0.2)) !important;
-            border: 1px solid var(--neon-cyan) !important;
-            border-radius: 14px !important;
-            color: var(--text) !important;
-            font-weight: 700 !important;
-            transition: all 0.25s ease !important;
+            background: linear-gradient(135deg, var(--tt-cyan), var(--tt-pink)) !important;
+            border: none !important;
+            border-radius: 12px !important;
+            color: #000 !important;
+            font-weight: 900 !important;
+            padding: 0.85rem 1rem !important;
+            font-size: 1rem !important;
+            box-shadow: 0 3px 16px rgba(37,244,238,0.35) !important;
+            transition: all 0.15s ease !important;
         }
         .stDownloadButton > button:hover {
-            box-shadow: 0 0 26px rgba(0,229,255,0.5) !important;
-            transform: translateY(-2px);
+            transform: scale(1.02);
+            box-shadow: 0 5px 24px rgba(254,44,85,0.45) !important;
         }
 
-        /* ---------- Expander ---------- */
-        .streamlit-expanderHeader, details summary {
-            background: rgba(255,255,255,0.03) !important;
-            border-radius: 12px !important;
-            border: 1px solid rgba(0,229,255,0.15) !important;
-            color: var(--text) !important;
-            font-weight: 600 !important;
-        }
-        details {
-            background: rgba(18,18,31,0.7) !important;
+        /* ---------- File uploader (dropzone) ---------- */
+        section[data-testid="stFileUploadDropzone"] {
+            background: var(--tt-card) !important;
+            border: 1.5px dashed var(--tt-border) !important;
             border-radius: 14px !important;
-            border: 1px solid rgba(255,255,255,0.06) !important;
+            padding: 1.5rem 1rem !important;
+            transition: all 0.2s ease;
+        }
+        section[data-testid="stFileUploadDropzone"]:hover {
+            border-color: var(--tt-cyan) !important;
+            background: #181818 !important;
+        }
+        section[data-testid="stFileUploadDropzone"] svg {
+            fill: var(--tt-cyan) !important;
+        }
+
+        /* ---------- Expander (settings) ---------- */
+        details {
+            background: var(--tt-card) !important;
+            border-radius: 12px !important;
+            border: 1px solid var(--tt-border) !important;
+            margin-bottom: 0.5rem !important;
             overflow: hidden;
-            margin-bottom: 0.6rem;
+        }
+        details summary {
+            padding: 0.85rem 1rem !important;
+            font-weight: 600 !important;
+            color: var(--tt-text) !important;
+            font-size: 0.95rem !important;
+        }
+        details summary:hover {
+            background: var(--tt-card-2) !important;
         }
         details[open] summary {
-            border-bottom: 1px solid rgba(0,229,255,0.15) !important;
+            border-bottom: 1px solid var(--tt-border) !important;
         }
 
         /* ---------- Inputs ---------- */
-        .stTextInput > div > div > input,
-        .stTextArea > div > div > textarea,
+        .stTextInput input,
+        .stTextArea textarea,
         .stNumberInput input {
-            background: rgba(10,10,18,0.6) !important;
-            border: 1px solid rgba(0,229,255,0.2) !important;
+            background: var(--tt-card) !important;
+            border: 1px solid var(--tt-border) !important;
             border-radius: 10px !important;
-            color: var(--text) !important;
+            color: var(--tt-text) !important;
+            font-size: 0.92rem !important;
         }
-        .stTextArea textarea:focus, .stTextInput input:focus {
-            border-color: var(--neon-cyan) !important;
-            box-shadow: 0 0 12px rgba(0,229,255,0.25) !important;
+        .stTextArea textarea:focus,
+        .stTextInput input:focus {
+            border-color: var(--tt-cyan) !important;
+            box-shadow: 0 0 0 2px rgba(37,244,238,0.15) !important;
         }
 
-        /* ---------- Select / Radio / Slider ---------- */
-        .stSelectbox > div > div,
-        .stMultiSelect > div > div {
-            background: rgba(10,10,18,0.6) !important;
-            border: 1px solid rgba(0,229,255,0.2) !important;
+        /* ---------- Selectbox / Radio ---------- */
+        .stSelectbox > div > div {
+            background: var(--tt-card) !important;
+            border: 1px solid var(--tt-border) !important;
             border-radius: 10px !important;
         }
-        .stSlider > div > div > div > div {
-            background: linear-gradient(90deg, var(--neon-cyan), var(--neon-magenta)) !important;
+        .stSelectbox > div > div:hover {
+            border-color: #3a3a3d !important;
         }
-        .stRadio > div {
+
+        /* ---------- Radio as pill tabs ---------- */
+        .stRadio > div[role="radiogroup"] {
+            display: flex;
             gap: 0.5rem;
+            flex-wrap: wrap;
         }
-        .stRadio label {
-            background: rgba(255,255,255,0.03);
-            padding: 0.45rem 0.9rem;
+        .stRadio > div[role="radiogroup"] > label {
+            background: var(--tt-card);
+            padding: 0.55rem 0.95rem !important;
             border-radius: 10px;
-            border: 1px solid rgba(255,255,255,0.06);
+            border: 1px solid var(--tt-border);
+            cursor: pointer;
+            transition: all 0.15s ease;
+            margin: 0 !important;
+        }
+        .stRadio > div[role="radiogroup"] > label:hover {
+            border-color: var(--tt-cyan);
+            background: var(--tt-card-2);
         }
 
-        /* ---------- File uploader ---------- */
-        section[data-testid="stFileUploadDropzone"] {
-            background: rgba(0,229,255,0.04) !important;
-            border: 2px dashed rgba(0,229,255,0.35) !important;
-            border-radius: 16px !important;
-            transition: all 0.25s ease;
+        /* ---------- Slider ---------- */
+        .stSlider > div > div > div > div {
+            background: linear-gradient(90deg, var(--tt-cyan), var(--tt-pink)) !important;
         }
-        section[data-testid="stFileUploadDropzone"]:hover {
-            background: rgba(0,229,255,0.08) !important;
-            border-color: var(--neon-cyan) !important;
-            box-shadow: 0 0 20px rgba(0,229,255,0.2);
-        }
-
-        /* ---------- Progress bar ---------- */
-        .stProgress > div > div > div > div {
-            background: linear-gradient(90deg, var(--neon-cyan), var(--neon-magenta)) !important;
+        .stSlider [data-baseweb="slider"] [role="slider"] {
+            background: #fff !important;
+            box-shadow: 0 0 0 3px var(--tt-pink) !important;
         }
 
         /* ---------- Toggle ---------- */
-        .stCheckbox, .stToggle {
-            padding: 0.2rem 0;
+        .stCheckbox label span[data-baseweb="checkbox"] div[role="checkbox"] {
+            background: var(--tt-pink) !important;
+            border-color: var(--tt-pink) !important;
         }
 
-        /* ---------- Alert / Info / Warning / Success ---------- */
-        .stAlert {
-            border-radius: 12px !important;
-            border-left-width: 4px !important;
-            backdrop-filter: blur(6px);
-        }
-
-        /* ---------- Status (running) ---------- */
-        div[data-testid="stStatusWidget"] {
-            border-radius: 12px !important;
-            border: 1px solid rgba(0,229,255,0.2) !important;
+        /* ---------- Progress ---------- */
+        .stProgress > div > div > div > div {
+            background: linear-gradient(90deg, var(--tt-cyan), var(--tt-pink)) !important;
         }
 
         /* ---------- Code block ---------- */
         .stCode, pre {
-            background: rgba(5,5,10,0.8) !important;
-            border: 1px solid rgba(0,229,255,0.2) !important;
-            border-radius: 12px !important;
-            color: #a8e6ff !important;
+            background: var(--tt-card) !important;
+            border: 1px solid var(--tt-border) !important;
+            border-radius: 10px !important;
+            color: var(--tt-text) !important;
+            font-size: 0.8rem !important;
         }
         code {
-            background: rgba(0,229,255,0.08) !important;
-            color: var(--neon-cyan) !important;
+            background: var(--tt-card-2) !important;
+            color: var(--tt-cyan) !important;
             padding: 2px 6px;
-            border-radius: 6px;
+            border-radius: 5px;
+            font-size: 0.85em;
         }
 
-        /* ---------- Image ---------- */
-        img {
+        /* ---------- Alerts ---------- */
+        .stAlert {
+            border-radius: 10px !important;
+            border: 1px solid var(--tt-border) !important;
+            background: var(--tt-card) !important;
+        }
+
+        /* ---------- Status ---------- */
+        div[data-testid="stStatusWidget"] {
+            background: var(--tt-card) !important;
+            border: 1px solid var(--tt-border) !important;
+            border-radius: 12px !important;
+        }
+
+        /* ---------- Image / Video ---------- */
+        img, video {
             border-radius: 14px !important;
         }
-
-        /* ---------- Video ---------- */
         video {
-            border-radius: 14px !important;
-            border: 1px solid rgba(0,229,255,0.25);
-            box-shadow: 0 0 24px rgba(0,229,255,0.15);
+            border: 1px solid var(--tt-border);
         }
 
         /* ---------- Divider ---------- */
         hr {
             border: none;
             height: 1px;
-            background: linear-gradient(90deg, transparent, rgba(0,229,255,0.3), transparent);
-            margin: 1.5rem 0;
+            background: var(--tt-border);
+            margin: 1.2rem 0;
         }
 
-        /* ---------- Section badges ---------- */
-        .badge {
-            display: inline-block;
-            padding: 4px 12px;
-            border-radius: 20px;
-            font-size: 0.72rem;
-            font-weight: 700;
-            letter-spacing: 0.05em;
-            text-transform: uppercase;
-            margin-bottom: 0.6rem;
+        /* ---------- Result card (TikTok video card) ---------- */
+        .tt-result {
+            background: var(--tt-card);
+            border: 1px solid var(--tt-border);
+            border-radius: 16px;
+            padding: 1rem 1.2rem;
+            margin-bottom: 0.8rem;
+            position: relative;
+            overflow: hidden;
         }
-        .badge-cyan   { background: rgba(0,229,255,0.12); color: var(--neon-cyan); border: 1px solid rgba(0,229,255,0.35); }
-        .badge-magenta{ background: rgba(255,45,149,0.12); color: var(--neon-magenta); border: 1px solid rgba(255,45,149,0.35); }
-        .badge-purple { background: rgba(168,85,247,0.12); color: var(--neon-purple); border: 1px solid rgba(168,85,247,0.35); }
+        .tt-result::before {
+            content: "";
+            position: absolute;
+            top: 0; left: 0; right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, var(--tt-cyan), var(--tt-pink));
+        }
+        .tt-result .title {
+            font-size: 1.05rem;
+            font-weight: 800;
+            margin-bottom: 0.25rem;
+        }
+        .tt-result .meta {
+            font-size: 0.82rem;
+            color: var(--tt-muted);
+        }
+
+        /* ---------- Timing list (TikTok stats) ---------- */
+        .tt-stats {
+            background: var(--tt-card);
+            border: 1px solid var(--tt-border);
+            border-radius: 12px;
+            padding: 0.85rem 1rem;
+            margin: 0.6rem 0;
+        }
+        .tt-stats .row {
+            display: flex;
+            justify-content: space-between;
+            padding: 0.4rem 0;
+            font-size: 0.86rem;
+            border-bottom: 1px solid #1f1f22;
+        }
+        .tt-stats .row:last-child {
+            border-bottom: none;
+        }
+        .tt-stats .row .val {
+            color: var(--tt-cyan);
+            font-weight: 700;
+        }
+
+        /* ---------- Floating action bar (bottom) ---------- */
+        .tt-fab {
+            position: fixed;
+            bottom: 1rem;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 0.5rem;
+            background: rgba(18,18,18,0.92);
+            backdrop-filter: blur(12px);
+            padding: 0.5rem 0.6rem;
+            border-radius: 50px;
+            border: 1px solid var(--tt-border);
+            z-index: 999;
+            box-shadow: 0 4px 24px rgba(0,0,0,0.6);
+        }
+        .tt-fab .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+            padding: 0.5rem 0.9rem;
+            border-radius: 50px;
+            font-size: 0.82rem;
+            font-weight: 700;
+            color: var(--tt-text);
+            text-decoration: none;
+            transition: all 0.15s ease;
+            cursor: default;
+        }
+        .tt-fab .btn.active {
+            background: var(--tt-pink);
+        }
 
         /* ---------- Scrollbar ---------- */
-        ::-webkit-scrollbar { width: 8px; height: 8px; }
-        ::-webkit-scrollbar-track { background: var(--bg-0); }
-        ::-webkit-scrollbar-thumb {
-            background: linear-gradient(var(--neon-cyan), var(--neon-purple));
-            border-radius: 8px;
-        }
+        ::-webkit-scrollbar { width: 0px; }
 
-        /* ---------- Caption ---------- */
-        .stCaption, [data-testid="stCaptionContainer"] {
-            color: var(--muted) !important;
-        }
-
-        /* ---------- Timing table ---------- */
-        .timing-table {
-            width: 100%;
-            border-collapse: collapse;
-            border-radius: 12px;
-            overflow: hidden;
-            background: rgba(18,18,31,0.6);
-            border: 1px solid rgba(0,229,255,0.12);
-        }
-        .timing-table th {
-            background: rgba(0,229,255,0.08);
-            color: var(--neon-cyan);
-            padding: 10px 14px;
-            text-align: left;
-            font-size: 0.85rem;
-            font-weight: 600;
-        }
-        .timing-table td {
-            padding: 9px 14px;
-            border-top: 1px solid rgba(255,255,255,0.04);
-            font-size: 0.88rem;
-        }
-        .timing-table td:last-child {
-            color: var(--neon-cyan);
-            font-weight: 700;
-        }
-
-        /* ---------- Result card ---------- */
-        .result-card {
-            background: linear-gradient(135deg, rgba(0,229,255,0.08), rgba(168,85,247,0.08));
-            border: 1px solid rgba(0,229,255,0.3);
-            border-radius: 16px;
-            padding: 1.2rem 1.5rem;
-            margin-bottom: 1rem;
-            box-shadow: 0 0 30px rgba(0,229,255,0.1);
-        }
-        .result-card h3 {
-            margin: 0 0 0.3rem 0 !important;
-            color: var(--neon-cyan) !important;
-        }
-        .result-card .size {
-            color: var(--muted);
+        /* ---------- Custom avatar ---------- */
+        .tt-avatar {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 38px;
+            height: 38px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--tt-cyan), var(--tt-pink));
+            color: #000;
+            font-weight: 900;
             font-size: 0.9rem;
+        }
+
+        /* ---------- Loading shimmer ---------- */
+        @keyframes ttshine {
+            0% { background-position: -200% 0; }
+            100% { background-position: 200% 0; }
+        }
+        .tt-shine {
+            background: linear-gradient(90deg, var(--tt-card) 0%, var(--tt-card-2) 50%, var(--tt-card) 100%);
+            background-size: 200% 100%;
+            animation: ttshine 2s infinite;
         }
         </style>
         """,
@@ -405,23 +524,19 @@ def wav_dur(path):
 
 def timing_html(d):
     rows = "".join(
-        f"<tr><td>{k}</td><td>{fmt_t(v)}</td></tr>" for k, v in d.items()
+        f'<div class="row"><span>{k}</span><span class="val">{fmt_t(v)}</span></div>'
+        for k, v in d.items()
     )
-    return (
-        '<table class="timing-table">'
-        "<thead><tr><th>အဆင့်</th><th>ကြာချိန်</th></tr></thead>"
-        f"<tbody>{rows}</tbody></table>"
-    )
+    return f'<div class="tt-stats">{rows}</div>'
 
 
 def clean_my(text):
-    """မြန်မာစာ၊ ဂဏန်း၊ ပုဒ်ဖြတ်သာ ကျန်ခဲ့"""
     return re.sub(
         r"[^\u1000-\u109F\uAA60-\uAA7F\uA9E0-\uA9FF\s0-9.,!?\"'%\-]", "", text
     ).strip()
 
 
-@st.cache_resource(show_spinner="Whisper model ကို ဖွင့်နေတယ် (ပထမအကြိမ် download လုပ်မယ်)...")
+@st.cache_resource(show_spinner="Whisper model ကို ဖွင့်နေတယ်...")
 def load_whisper(size):
     from faster_whisper import WhisperModel
     return WhisperModel(size, device="cpu", compute_type="int8",
@@ -429,7 +544,7 @@ def load_whisper(size):
 
 
 # ====================================================================
-# TTS : Edge TTS + VoxCPM (gradio_client)
+# TTS
 # ====================================================================
 def tts_edge(text, voice, rate, mp3, proxy=None):
     import edge_tts
@@ -452,8 +567,6 @@ def _gclient(space, token):
 
 
 class VoxEngine:
-    """VoxCPM Space များကို အစဉ်လိုက် စမ်းမယ်။ မရရင် None ပြန် (Edge TTS ကို ခေါ်ရန်)။"""
-
     def __init__(self, ref_path=None, token=None):
         self.ref = ref_path
         self.token = token
@@ -497,7 +610,7 @@ class VoxEngine:
                 shutil.copy(p, out_wav)
                 self.active = i
                 return sp["space"]
-            except Exception as ex:  # noqa: BLE001
+            except Exception as ex:
                 self.last_err = f"{sp['space']}: {str(ex)[:120]}"
                 self.fails[i] += 1
                 if self.fails[i] >= 2:
@@ -506,7 +619,7 @@ class VoxEngine:
 
 
 # ====================================================================
-# Subtitle PNG (Pillow) helpers
+# Subtitle / Neon helpers
 # ====================================================================
 def find_font():
     here = os.path.dirname(os.path.abspath(__file__))
@@ -537,10 +650,10 @@ def get_font(path, size, layout="raqm"):
             use_raqm = layout == "raqm" and features.check("raqm")
             eng = ImageFont.Layout.RAQM if use_raqm else ImageFont.Layout.BASIC
             _FONT_CACHE[key] = ImageFont.truetype(path, size, layout_engine=eng)
-        except Exception:  # noqa: BLE001
+        except Exception:
             try:
                 _FONT_CACHE[key] = ImageFont.truetype(path, size)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 _FONT_CACHE[key] = ImageFont.load_default()
     return _FONT_CACHE[key]
 
@@ -609,7 +722,6 @@ def build_overlay(text, W, H, font_path, fs, pos_y, alpha=200, color=(255, 255, 
     font = get_font(font_path, fs, layout)
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
-
     pad_x, pad_y = int(fs * 0.6), int(fs * 0.5)
     lines = wrap_text(text, font, W - 2 * pad_x)
     if not lines:
@@ -620,7 +732,6 @@ def build_overlay(text, W, H, font_path, fs, pos_y, alpha=200, color=(255, 255, 
     box_x = 0
     max_y = max(0, H - box_h)
     box_y = max(0, min(int(pos_y / 100 * max_y), max_y))
-
     d.rounded_rectangle([box_x, box_y, box_x + box_w, box_y + box_h],
                         radius=int(fs * 0.66), fill=(0, 0, 0, alpha))
     ink = (int(color[0]), int(color[1]), int(color[2]), 255)
@@ -634,7 +745,6 @@ def build_overlay(text, W, H, font_path, fs, pos_y, alpha=200, color=(255, 255, 
         d.text((lx, ty), ln, font=font, fill=ink,
                stroke_width=1 if bold else 0, stroke_fill=ink)
         ty += lh
-
     arr = np.array(img)
     rows = np.where(arr[:, :, 3].any(axis=1))[0]
     if len(rows) == 0:
@@ -651,9 +761,6 @@ def blend_overlay(fr, ov):
     fr[ov["y0"]:ov["y1"]] = np.clip(reg, 0, 255).astype(np.uint8)
 
 
-# ====================================================================
-# Neon border
-# ====================================================================
 class Neon:
     BASE = np.array([12, 8, 10], np.float32)
     CYAN = np.array([255, 255, 0], np.float32)
@@ -716,7 +823,6 @@ def render_final(src, audio, out, plan, total, height, subs, font_path, fs_pct, 
     nfr = max(1, int(round(total * fps_out)))
     fs = max(16, int(W * fs_pct / 100))
     neon = Neon(W, H, neon_th, neon_speed) if neon_on else None
-
     q = queue.Queue(maxsize=24)
     stop = threading.Event()
 
@@ -770,7 +876,6 @@ def render_final(src, audio, out, plan, total, height, subs, font_path, fs_pct, 
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=log)
     th = threading.Thread(target=producer, daemon=True)
     th.start()
-
     k, cur_k, cur_ov, j = 0, -1, None, 0
     try:
         while True:
@@ -807,7 +912,7 @@ def render_final(src, audio, out, plan, total, height, subs, font_path, fs_pct, 
         cap.release()
         try:
             proc.stdin.close()
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
         proc.wait()
         log.close()
@@ -845,9 +950,6 @@ def make_preview(path, height, text, font_path, fs_pct, pos_y, neon_on, neon_th,
     return cv2.cvtColor(fr, cv2.COLOR_BGR2RGB)
 
 
-# ====================================================================
-# Manual translate helpers
-# ====================================================================
 def build_prompt(units):
     lines = "\n".join(f"[{i}] {u['src']}" for i, u in enumerate(units))
     return (
@@ -874,9 +976,6 @@ def parse_numbered(text, n):
     return got
 
 
-# ====================================================================
-# Session helpers
-# ====================================================================
 def reset_job():
     wd = st.session_state.get("wd")
     if wd and os.path.isdir(wd):
@@ -884,7 +983,7 @@ def reset_job():
     for k in ("wd", "units", "vdur", "result", "manual", "apply_msg", "gem_paste", "t1", "t2"):
         try:
             st.session_state.pop(k, None)
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
 
@@ -892,7 +991,7 @@ def cleanup_uploads():
     for p in st.session_state.get("up_paths", []):
         try:
             os.remove(p)
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
     st.session_state["up_paths"] = []
     st.session_state["up_key"] = st.session_state.get("up_key", 0) + 1
@@ -921,26 +1020,38 @@ def save_upload(up):
 
 
 # ====================================================================
-# 🎨 APPLY CSS
+# 🎵 TIKTOK UI
 # ====================================================================
-inject_css()
+inject_tiktok_css()
 
-# ====================================================================
-# HERO HEADER
-# ====================================================================
+# Top bar (TikTok style)
 st.markdown(
     """
-    <div class="hero">
-        <h1>🎬 Recap → Myanmar</h1>
-        <p>Whisper · Gemini · Edge TTS / VoxCPM · Smart Sync · Neon Border</p>
+    <div class="tt-topbar">
+        <div class="logo">Recap Myanmar</div>
+        <div class="icons">
+            <span>🔍</span>
+            <span>💬</span>
+            <span>👤</span>
+        </div>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
-# ====================================================================
-# SETTINGS
-# ====================================================================
+# Tab bar
+st.markdown(
+    """
+    <div class="tt-tabs">
+        <div class="tt-tab active">For You</div>
+        <div class="tt-tab">Following</div>
+        <div class="tt-tab">Explore</div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+# ---- Settings (collapsed expanders)
 with st.expander("⚙️ Settings", expanded=False):
     c1, c2 = st.columns(2)
     src_lang = c1.selectbox("မူရင်းဘာသာ", ["auto", "en", "zh", "ko", "ja", "hi", "th", "vi", "id"])
@@ -950,8 +1061,7 @@ with st.expander("⚙️ Settings", expanded=False):
     height = c3.select_slider("Output height", [360, 480, 720, 1080], value=720)
     max_speed = c4.slider("ရုပ် အမြန်ဆုံး ဆ", 1.0, 2.0, 1.25, 0.05)
     max_min = st.slider("Video အရှည် ကန့်သတ် (မိနစ်)", 1, 15, 6)
-    preset = st.selectbox("Render speed", ["ultrafast", "superfast", "veryfast"], index=0,
-                          help="ultrafast = အမြန်ဆုံး (file အနည်းငယ်ကြီး)၊ veryfast = file သေး/နှေးနည်းနည်း")
+    preset = st.selectbox("Render speed", ["ultrafast", "superfast", "veryfast"], index=0)
 
 with st.expander("🔊 အသံ (Voice)", expanded=False):
     engine = st.radio(
@@ -960,48 +1070,43 @@ with st.expander("🔊 အသံ (Voice)", expanded=False):
         horizontal=True,
     )
     voice = st.selectbox("Edge voice", ["my-MM-ThihaNeural", "my-MM-NilarNeural"],
-                         format_func=lambda v: "👨 Thiha (ယောက်ျား)" if "Thiha" in v else "👩 Nilar (မိန်းမ)")
+                         format_func=lambda v: "👨 Thiha" if "Thiha" in v else "👩 Nilar")
     rate_n = st.slider("Edge speed %", -50, 100, 0, 5)
-    tts_workers = st.slider("TTS တစ်ပြိုင်နက် အရေအတွက်", 1, 10, 6,
-                            help="များရင်မြန်တယ်။ Edge က error ပေးရင် လျှော့ပါ (VoxCPM မှာ 1 ပဲသုံး)")
+    tts_workers = st.slider("TTS တစ်ပြိုင်နက်", 1, 10, 6)
     ref_up = None
     if engine.startswith("Vox"):
         ref_up = st.file_uploader("🎤 Reference audio (optional)", type=["wav", "mp3", "m4a"])
-        st.caption("VoxCPM Space တွေက queue/sleep ဖြစ်တတ်တယ်။ မရရင် စာကြောင်းတစ်ခုချင်း Edge TTS နဲ့ အစားထိုးမယ်။")
+        st.caption("VoxCPM Space တွေက queue/sleep ဖြစ်တတ်တယ်။")
 
-with st.expander("🎨 စာတန်း (PNG) + Neon", expanded=False):
+with st.expander("🎨 စာတန်း + Neon", expanded=False):
     use_sub = st.toggle("PNG စာတန်းထည့်", value=True)
     c5, c6 = st.columns(2)
-    sub_size = c5.slider("စာအရွယ် (% of width)", 3.0, 12.0, 7.0, 0.5)
-    sub_pos = c6.slider("နေရာ (0=အပေါ် 100=အောက်)", 0, 100, 90, 1)
+    sub_size = c5.slider("စာအရွယ် (%)", 3.0, 12.0, 7.0, 0.5)
+    sub_pos = c6.slider("နေရာ", 0, 100, 90, 1)
     use_neon = st.toggle("Neon border", value=True)
     zoom = st.slider("Zoom", 1.0, 1.25, 1.0, 0.01)
     font_path = find_font()
     if not font_path:
-        st.warning("Myanmar font မတွေ့ပါ။ MyanmarPadaung.ttf ကို repo root မှာ ထည့်ပါ။")
+        st.warning("Myanmar font မတွေ့ပါ။")
     if not features.check("raqm"):
-        st.warning("raqm မရှိလို့ မြန်မာစာ ပုံစံ မမှန်နိုင်ပါ (packages.txt ထဲ libraqm0 ပါစေ)")
+        st.warning("raqm မရှိလို့ မြန်မာစာ ပုံစံ မမှန်နိုင်ပါ")
 
 rate = f"{rate_n:+d}%"
-
 neon_th = 10
 neon_speed = 0.4
 flip = True
-sub_style = {
-    "alpha": int(0.8 * 255),
-    "color": (255, 255, 255),
-    "bold": 0,
-    "layout": "raqm",
-}
+sub_style = {"alpha": int(0.8 * 255), "color": (255, 255, 255), "bold": 0, "layout": "raqm"}
 proxy = secret("EDGE_TTS_PROXY") or None
 hf_token = secret("HF_TOKEN") or None
 
-# ====================================================================
-# UPLOAD
-# ====================================================================
-st.markdown('<span class="badge badge-cyan">STEP 1</span>', unsafe_allow_html=True)
-up = st.file_uploader("🎥 Video ရွေးပါ", type=["mp4", "mov", "mkv", "webm", "m4v"],
-                      key=f"vid_{st.session_state.get('up_key', 0)}")
+# ---- Step 1: Upload
+st.markdown(
+    '<div class="tt-section"><span class="num">1</span> Video ရွေးပါ</div>',
+    unsafe_allow_html=True,
+)
+up = st.file_uploader(" ", type=["mp4", "mov", "mkv", "webm", "m4v"],
+                      key=f"vid_{st.session_state.get('up_key', 0)}",
+                      label_visibility="collapsed")
 
 if up:
     try:
@@ -1010,13 +1115,14 @@ if up:
                           sub_size, sub_pos, use_neon, neon_th, neon_speed, flip, zoom, sub_style)
         if pv is not None:
             st.image(pv, caption="🔍 Preview", use_container_width=True)
-    except Exception as ex:  # noqa: BLE001
+    except Exception as ex:
         st.caption(f"preview မရ: {str(ex)[:100]}")
 
-# ====================================================================
-# STAGE 1 : Whisper
-# ====================================================================
-st.markdown('<span class="badge badge-magenta">STEP 2</span>', unsafe_allow_html=True)
+# ---- Step 2: Whisper
+st.markdown(
+    '<div class="tt-section"><span class="num">2</span> စာသားထုတ်</div>',
+    unsafe_allow_html=True,
+)
 if st.button("🎧 စာသားထုတ်", type="primary", disabled=not up, use_container_width=True):
     reset_job()
     st.session_state.pop("cleaned", None)
@@ -1028,8 +1134,7 @@ if st.button("🎧 စာသားထုတ်", type="primary", disabled=not up
     try:
         vdur = dur(src)
         if vdur > max_min * 60:
-            st.error(f"Video က {vdur/60:.1f} မိနစ်ရှိတယ်။ {max_min} မိနစ်အောက်ပဲ လက်ခံတယ် "
-                     "(Settings မှာ ပြောင်းလို့ရ)")
+            st.error(f"Video က {vdur/60:.1f} မိနစ်ရှိတယ်။ {max_min} မိနစ်အောက်ပဲ လက်ခံတယ်")
             st.stop()
         st.session_state["vdur"] = vdur
 
@@ -1076,28 +1181,27 @@ if st.button("🎧 စာသားထုတ်", type="primary", disabled=not up
         ]
         st.session_state["manual"] = True
         st.session_state["ver"] = st.session_state.get("ver", 0) + 1
-    except Exception as ex:  # noqa: BLE001
+    except Exception as ex:
         st.error(f"Error: {ex}")
 
-# ====================================================================
-# STAGE 2 : Translate + Render
-# ====================================================================
+# ---- Step 3: Translate
 if st.session_state.get("units"):
     units = st.session_state["units"]
     if st.session_state.get("t1"):
         st.caption("⏱️ " + " · ".join(f"{k} {fmt_t(v)}" for k, v in st.session_state["t1"].items()))
 
-    st.markdown("---")
-    st.markdown('<span class="badge badge-purple">STEP 3</span>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="tt-section"><span class="num">3</span> ဘာသာပြန် (Gemini)</div>',
+        unsafe_allow_html=True,
+    )
 
     if st.session_state.get("manual"):
-        st.subheader("📋 Gemini မှာ ဘာသာပြန်ရန်")
-        st.caption("① အောက်က စာသားကို Copy (ညာထောင့် icon) → ② Gemini app မှာ paste → "
-                   "③ ရလဒ်ကို အောက်က ကွက်ထဲ paste → ④ Apply")
+        st.caption("① အောက်က စာသား Copy → ② Gemini app မှာ paste → ③ ရလဒ်ကို အောက်ကွက်ထဲ paste → ④ Apply")
         st.code(build_prompt(units), language=None)
-        pasted = st.text_area("📥 Gemini ရလဒ် ဒီမှာ paste", height=200, key="gem_paste",
-                              placeholder="[0] မြန်မာစာ...\n[1] မြန်မာစာ...")
-        if st.button("✅ Apply (စာသား ဖြည့်)", use_container_width=True):
+        pasted = st.text_area("📥 Gemini ရလဒ်", height=180, key="gem_paste",
+                              placeholder="[0] မြန်မာစာ...\n[1] မြန်မာစာ...",
+                              label_visibility="collapsed")
+        if st.button("✅ Apply", use_container_width=True):
             got = parse_numbered(pasted, len(units))
             for i, t in got.items():
                 units[i]["my"] = clean_my(t)
@@ -1110,8 +1214,11 @@ if st.session_state.get("units"):
         if st.session_state.get("apply_msg"):
             st.info(st.session_state["apply_msg"])
 
-    st.markdown("---")
-    st.markdown('<span class="badge badge-cyan">STEP 4</span>', unsafe_allow_html=True)
+    # ---- Step 4: Render
+    st.markdown(
+        '<div class="tt-section"><span class="num">4</span> Video ဖန်တီး</div>',
+        unsafe_allow_html=True,
+    )
     if st.button("🚀 အသံထုတ် + Video ပေါင်း", type="primary", use_container_width=True):
         wd, vdur = st.session_state["wd"], st.session_state["vdur"]
         src = os.path.join(wd, "src.mp4")
@@ -1148,7 +1255,7 @@ if st.session_state.get("units"):
                         try:
                             tts_edge(my_list[i], voice, rate, raw_audio, proxy)
                             break
-                        except Exception as ex:  # noqa: BLE001
+                        except Exception as ex:
                             if attempt == 3:
                                 raise RuntimeError(
                                     f"Edge TTS မအောင်မြင်ပါ (စာကြောင်း #{i}): {ex}\n\n{my_list[i]}")
@@ -1217,7 +1324,7 @@ if st.session_state.get("units"):
                     t0 += durs[i]
 
             t_a = time.time()
-            with st.status("🎬 Video render (Smart Sync + စာတန်း + Neon)...", expanded=True) as rst:
+            with st.status("🎬 Video render...", expanded=True) as rst:
                 bar = st.progress(0.0)
                 final = f"{wd}/final.mp4"
                 render_final(src, allwav, final, plan, cum, height, subs,
@@ -1227,49 +1334,59 @@ if st.session_state.get("units"):
                 T["🎬 Video render"] = time.time() - t_a
                 rst.update(label=f"🎬 Render ပြီး ({cum:.1f}s / မူရင်း {vdur:.1f}s) · "
                                  f"{fmt_t(T['🎬 Video render'])}", state="complete")
-            T["⏱️ စုစုပေါင်း (အဆင့် 2)"] = time.time() - t_all
+            T["⏱️ စုစုပေါင်း"] = time.time() - t_all
             st.session_state["t2"] = T
 
             with open(final, "rb") as f:
                 st.session_state["result"] = f.read()
-        except Exception as ex:  # noqa: BLE001
+        except Exception as ex:
             st.error(f"Error: {ex}")
 
-# ====================================================================
-# RESULT
-# ====================================================================
+# ---- Result (TikTok card style)
 if st.session_state.get("result"):
-    st.markdown("---")
     mb = len(st.session_state["result"]) / 1e6
     st.markdown(
         f"""
-        <div class="result-card">
-            <h3>✅ ရလဒ် အသင့်ဖြစ်ပါပြီ</h3>
-            <div class="size">📦 File အရွယ်အစား: {mb:.1f} MB</div>
+        <div class="tt-result">
+            <div class="title">🎉 ရလဒ် အသင့်ဖြစ်ပါပြီ</div>
+            <div class="meta">📦 {mb:.1f} MB · Ready to share</div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    if st.toggle("▶️ ဒီမှာ video ကြည့်မယ် (ဖိုင်ကြီးရင်/net နှေးရင် ကြာတတ်)", value=False, key="show_vid"):
+    if st.toggle("▶️ Video ကြည့်မယ်", value=False, key="show_vid"):
         st.video(st.session_state["result"])
 
     _tt = {}
     _tt.update(st.session_state.get("t1") or {})
     _tt.update(st.session_state.get("t2") or {})
     if _tt:
-        st.markdown("**⏱️ ဘယ်အပိုင်း ဘယ်လောက်ကြာလဲ**")
         st.markdown(timing_html(_tt), unsafe_allow_html=True)
 
-    st.download_button("⬇️ Download MP4", st.session_state["result"],
+    st.download_button("⬇️ Download", st.session_state["result"],
                        file_name="final_myanmar.mp4", mime="video/mp4",
                        use_container_width=True, on_click=cleanup_after_download)
 
     if st.session_state.get("cleaned"):
-        st.caption("🧹 Script နဲ့ တင်ထားတဲ့ video ကို ဖျက်ပြီးပါပြီ")
+        st.caption("🧹 Script & upload ဖျက်ပြီးပါပြီ")
 
     if st.button("🗑️ အသစ်ပြန်စ", use_container_width=True):
         reset_job()
         cleanup_uploads()
         st.session_state.pop("cleaned", None)
         st.rerun()
+
+# ---- Floating action bar (TikTok style, bottom)
+st.markdown(
+    """
+    <div class="tt-fab">
+        <div class="btn active">🏠 Home</div>
+        <div class="btn">🔍 Discover</div>
+        <div class="btn">➕ Create</div>
+        <div class="btn">📥 Inbox</div>
+        <div class="btn">👤 Me</div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
