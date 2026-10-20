@@ -799,8 +799,21 @@ if st.session_state.get("units"):
                         f.write(ref_up.getbuffer())
                 vox = VoxEngine(ref_path, hf_token)
 
+            sig_base = f"{engine}|{voice}|{rate}|" + \
+                (f"{ref_up.name}-{ref_up.size}" if ref_up else "noref")
+
             def do_line(i):
                 wav = f"{wd}/a{i:04d}.wav"
+                keyf = f"{wd}/a{i:04d}.key"
+                key = hashlib.md5(f"{sig_base}|{my_list[i]}".encode()).hexdigest()
+                # ---- Resume: အရင်အောင်ပြီးသား (စာသား/engine/voice မပြောင်း) ဆိုရင် ကျော်
+                if os.path.exists(wav) and os.path.exists(keyf):
+                    try:
+                        with open(keyf) as kf:
+                            if kf.read().strip() == key:
+                                return i, wav_dur(wav), vox is not None
+                    except Exception:  # noqa: BLE001
+                        pass
                 if vox is not None:
                     # ---- VoxCPM သီးသန့် (Edge fallback မရှိ)
                     raw_audio = f"{wd}/a{i:04d}_raw.wav"
@@ -829,6 +842,8 @@ if st.session_state.get("units"):
                                     f"Edge TTS မအောင်မြင်ပါ (စာကြောင်း #{i}): {ex}\n\n{my_list[i]}")
                             time.sleep(1.5)
                 sh(["ffmpeg", "-y", "-i", raw_audio, "-af", TRIM, "-ar", "44100", "-ac", "1", wav])
+                with open(keyf, "w") as kf:      # အောင်မှ key သိမ်း
+                    kf.write(key)
                 return i, wav_dur(wav), vox is not None
 
             durs = [0.0] * n
