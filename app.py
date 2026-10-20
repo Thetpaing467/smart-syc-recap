@@ -601,35 +601,9 @@ def save_upload(up):
 
 
 # ====================================================================
-# Link download — FAST (parallel range / yt-dlp 16 fragments / no re-encode)
-# + live % progress (MB, speed, ETA)
+# Link download (direct / Google Drive / Dropbox / YouTube ... yt-dlp ထောက်ပံ့တဲ့ site အားလုံး)
 # ====================================================================
 VIDEO_EXT = (".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi", ".ts", ".flv")
-
-
-class DL:
-    """Thread-safe progress state (worker thread က ရေး၊ main thread က UI ပြ)"""
-
-    def __init__(self):
-        self.lock = threading.Lock()
-        self.stage = "စတင်နေတယ်..."
-        self.kind = "bytes"      # bytes | time
-        self.done = 0.0
-        self.total = 0.0
-        self.base = 0.0          # overall % ထဲမှာ ဒီအဆင့် စတဲ့နေရာ
-        self.w = 0.9             # ဒီအဆင့်ရဲ့ အလေးချိန်
-        self.err = None
-        self.result = None
-        self.finished = False
-
-    def set(self, **kw):
-        with self.lock:
-            for k, v in kw.items():
-                setattr(self, k, v)
-
-    def add(self, n):
-        with self.lock:
-            self.done += n
 
 
 def _fix_dropbox(url):
@@ -639,128 +613,46 @@ def _fix_dropbox(url):
     return urlunparse(u._replace(query=urlencode(q, doseq=True)))
 
 
-def _dl_direct(url, out, S, conns=8, part=4 << 20):
-    """Direct link: server က Range ထောက်ရင် connection ၈ ခု တစ်ပြိုင်နက် ဆွဲ"""
+def _dl_direct(url, out, bar=None):
     import requests
-    hdr = {"User-Agent": "Mozilla/5.0"}
-    sess = requests.Session()
-    ad = requests.adapters.HTTPAdapter(pool_connections=conns, pool_maxsize=conns, max_retries=2)
-    sess.mount("https://", ad)
-    sess.mount("http://", ad)
-
-    def single(resp):
-        with open(out, "wb") as f:
-            for ch in resp.iter_content(1 << 20):
-                f.write(ch)
-                S.add(len(ch))
-
-    r = sess.get(url, stream=True, timeout=30, allow_redirects=True, headers=hdr)
-    try:
+    with requests.get(url, stream=True, timeout=30, allow_redirects=True,
+                      headers={"User-Agent": "Mozilla/5.0"}) as r:
         r.raise_for_status()
-        if "text/html" in r.headers.get("content-type", "").lower():
+        ctype = r.headers.get("content-type", "").lower()
+        if "text/html" in ctype:
             raise RuntimeError("Link က video ဖိုင် မဟုတ်ဘဲ web page ဖြစ်နေတယ်")
         total = int(r.headers.get("content-length") or 0)
-        can_range = ("bytes" in r.headers.get("accept-ranges", "").lower()
-                     and total > 2 * part and not r.headers.get("content-encoding"))
-        final_url = r.url
-        S.set(total=total, done=0)
-        if not can_range:
-            single(r)
-            if not os.path.exists(out) or os.path.getsize(out) < 1024:
-                raise RuntimeError("ဖိုင် မရပါ")
-            return out
-    finally:
-        r.close()
-
-    # ---- parallel range download
-    with open(out, "wb") as f:
-        f.truncate(total)
-    spans = [(s, min(s + part, total) - 1) for s in range(0, total, part)]
-
-    def fetch(span):
-        a, b = span
-        last = None
-        for _ in range(4):
-            wrote = 0
-            try:
-                with sess.get(final_url, headers={**hdr, "Range": f"bytes={a}-{b}"},
-                              stream=True, timeout=30) as rr:
-                    if rr.status_code != 206:
-                        raise RuntimeError("Range မထောက်ပံ့")
-                    with open(out, "r+b") as f:
-                        f.seek(a)
-                        for ch in rr.iter_content(256 << 10):
-                            f.write(ch)
-                            wrote += len(ch)
-                            S.add(len(ch))
-                return
-            except Exception as ex:  # noqa: BLE001
-                S.add(-wrote)
-                last = ex
-                time.sleep(0.5)
-        raise last
-
-    try:
-        with ThreadPoolExecutor(max_workers=conns) as pool:
-            for fu in as_completed([pool.submit(fetch, s) for s in spans]):
-                fu.result()
-    except Exception:  # noqa: BLE001
-        # Range မရရင် ရိုးရိုး stream နဲ့ ပြန်ဆွဲ
-        S.set(done=0)
-        with sess.get(final_url, stream=True, timeout=30, headers=hdr) as rr:
-            rr.raise_for_status()
-            single(rr)
+        got = 0
+        with open(out, "wb") as f:
+            for chunk in r.iter_content(1 << 20):
+                f.write(chunk)
+                got += len(chunk)
+                if bar is not None and total:
+                    bar.progress(min(got / total, 1.0))
     if not os.path.exists(out) or os.path.getsize(out) < 1024:
         raise RuntimeError("ဖိုင် မရပါ")
     return out
 
 
-def _dl_gdrive(url, out, S):
+def _dl_gdrive(url, out):
     import gdown
-    box = {}
-
-    def run():
-        try:
-            gdown.download(url, out, quiet=True, fuzzy=True)
-        except Exception as ex:  # noqa: BLE001
-            box["e"] = ex
-
-    t = threading.Thread(target=run, daemon=True)
-    t.start()
-    d = os.path.dirname(out)
-    while t.is_alive():      # total မသိလို့ ဆွဲပြီးသား MB + speed ပဲ ပြ
-        try:
-            S.set(done=sum(os.path.getsize(os.path.join(d, x)) for x in os.listdir(d)))
-        except Exception:  # noqa: BLE001
-            pass
-        time.sleep(0.3)
-    if "e" in box:
-        raise box["e"]
+    gdown.download(url, out, quiet=True, fuzzy=True)
     if not os.path.exists(out) or os.path.getsize(out) < 1024:
         raise RuntimeError("Google Drive ဖိုင် မရပါ (Share ကို 'Anyone with the link' ထားပါ)")
     return out
 
 
-def _dl_ytdlp(url, out_noext, height, S, cookies_text=None):
+def _dl_ytdlp(url, out_noext, height, bar=None, cookies_text=None):
     import yt_dlp
-    h = int(height)
-    parts = {}
 
     def hook(d):
-        fn = d.get("filename")
-        if d.get("status") == "downloading":
+        if bar is not None and d.get("status") == "downloading":
             tot = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
-            parts[fn] = (d.get("downloaded_bytes", 0), tot)
-        elif d.get("status") == "finished":
-            db = d.get("downloaded_bytes") or d.get("total_bytes") or 0
-            parts[fn] = (db, db)
-        vals = list(parts.values())
-        S.set(done=sum(v[0] for v in vals), total=sum(v[1] for v in vals))
+            if tot:
+                bar.progress(min(d.get("downloaded_bytes", 0) / tot, 1.0))
 
     opts = {
-        # h264+aac ကို ဦးစားပေး → ပြန် encode မလိုတော့
-        "format": (f"bv*[height<={h}][vcodec^=avc1]+ba[acodec^=mp4a]/"
-                   f"b[height<={h}][ext=mp4]/bv*[height<={h}]+ba/b[height<={h}]/bv*+ba/b"),
+        "format": f"bv*[height<={height}]+ba/b[height<={height}]/bv*+ba/b",
         "outtmpl": out_noext + ".%(ext)s",
         "merge_output_format": "mp4",
         "noplaylist": True,
@@ -768,9 +660,7 @@ def _dl_ytdlp(url, out_noext, height, S, cookies_text=None):
         "no_warnings": True,
         "retries": 5,
         "fragment_retries": 5,
-        "socket_timeout": 20,
-        "concurrent_fragment_downloads": 16,
-        "http_chunk_size": 10 << 20,     # throttle ကို ရှောင်
+        "concurrent_fragment_downloads": 4,
         "progress_hooks": [hook],
     }
     if cookies_text:
@@ -787,25 +677,8 @@ def _dl_ytdlp(url, out_noext, height, S, cookies_text=None):
     return max(files, key=os.path.getsize)
 
 
-def _ffmpeg_prog(cmd, S):
-    """ffmpeg ကို -progress နဲ့ run ပြီး % ပေး"""
-    with tempfile.TemporaryFile() as errf:
-        p = subprocess.Popen(cmd + ["-progress", "pipe:1", "-nostats"],
-                             stdout=subprocess.PIPE, stderr=errf, text=True)
-        for line in p.stdout:
-            if line.startswith("out_time_ms="):
-                try:
-                    S.set(done=int(line.split("=")[1]) / 1e6)
-                except ValueError:
-                    pass
-        p.wait()
-        if p.returncode != 0:
-            errf.seek(0)
-            raise RuntimeError(errf.read()[-800:].decode("utf-8", "ignore"))
-
-
-def _ensure_mp4(raw, final, height, S):
-    """h264 mp4 ဖြစ်အောင် — mp4+h264 ဆိုရင် move တစ်ခုတည်း (ချက်ချင်း)၊ မဟုတ်ရင် copy၊ နောက်ဆုံးမှ encode"""
+def _ensure_mp4(raw, final, height):
+    """h264 mp4 ဖြစ်အောင် လုပ် (cv2 ဖတ်နိုင်ဖို့)။ h264 ဆိုရင် copy၊ မဟုတ်ရင် re-encode"""
     try:
         codec = sh(["ffprobe", "-v", "error", "-select_streams", "v:0",
                     "-show_entries", "stream=codec_name", "-of", "csv=p=0", raw]).strip()
@@ -813,47 +686,34 @@ def _ensure_mp4(raw, final, height, S):
         codec = ""
     if not codec:
         raise RuntimeError("Video stream မတွေ့ပါ (ဖိုင်က video မဟုတ်နိုင်)")
-    S.set(stage="🔧 Video ပြင်နေတယ်...", kind="time", base=0.9, w=0.1, done=0, total=0)
     if codec == "h264":
-        if raw.lower().endswith(".mp4"):
-            shutil.move(raw, final)
-            return final
         try:
             sh(["ffmpeg", "-y", "-i", raw, "-c", "copy", "-movflags", "+faststart", final])
             return final
         except Exception:  # noqa: BLE001
             pass
-    try:
-        total = dur(raw)
-    except Exception:  # noqa: BLE001
-        total = 0
-    S.set(total=total, stage="🔧 Video ပြောင်းနေတယ် (h264)...")
-    _ffmpeg_prog(["ffmpeg", "-y", "-i", raw, "-vf", f"scale=-2:'min(ih,{int(height)})'",
-                  "-c:v", "libx264", "-preset", "ultrafast", "-crf", "26", "-threads", "0",
-                  "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "96k",
-                  "-movflags", "+faststart", final], S)
+    sh(["ffmpeg", "-y", "-i", raw, "-vf", f"scale=-2:'min(ih,{int(height)})'",
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "26", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", final])
     return final
 
 
-def fetch_link(url, height, S, cookies_text=None):
-    """Worker thread ထဲမှာ run (st.* မခေါ်ရ)"""
+def fetch_link(url, height, bar=None, cookies_text=None):
     url = url.strip()
     if not re.match(r"^https?://", url, re.I):
         raise ValueError("Link က http:// ဒါမှမဟုတ် https:// နဲ့ စရမယ်")
     key = hashlib.md5(url.encode()).hexdigest()[:12]
     final = f"/tmp/recap_up_{key}.mp4"
     if os.path.exists(final) and os.path.getsize(final) > 1024:
-        S.set(stage="✅ ရှိပြီးသား (cache)", done=1, total=1, base=0.0, w=1.0)
         return final
     work = tempfile.mkdtemp(prefix="dl_")
     try:
-        S.set(stage="⬇️ ဆွဲနေတယ်...", kind="bytes", base=0.0, w=0.9, done=0, total=0)
         u = urlparse(url)
         host, path_l = u.netloc.lower(), u.path.lower()
         raw, errs = None, []
         if "drive.google.com" in host or "docs.google.com" in host:
             raw = os.path.join(work, "gd.bin")
-            _dl_gdrive(url, raw, S)
+            _dl_gdrive(url, raw)
         else:
             if "dropbox.com" in host:
                 url = _fix_dropbox(url)
@@ -864,63 +724,24 @@ def fetch_link(url, height, S, cookies_text=None):
                 methods = ["ytdlp", "direct"]
             for m in methods:
                 try:
-                    S.set(done=0, total=0)
+                    if bar is not None:
+                        bar.progress(0.0)
                     if m == "direct":
-                        raw = _dl_direct(url, os.path.join(work, "direct.bin"), S)
+                        raw = _dl_direct(url, os.path.join(work, "direct.bin"), bar)
                     else:
-                        raw = _dl_ytdlp(url, os.path.join(work, "yt"), height, S, cookies_text)
+                        raw = _dl_ytdlp(url, os.path.join(work, "yt"), height, bar, cookies_text)
                     break
                 except Exception as ex:  # noqa: BLE001
                     errs.append(f"{m}: {str(ex)[:200]}")
                     raw = None
             if not raw:
                 raise RuntimeError("Link ကနေ မဆွဲနိုင်ပါ\n" + "\n".join(errs))
-        _ensure_mp4(raw, final, height, S)
+        if bar is not None:
+            bar.progress(1.0)
+        _ensure_mp4(raw, final, height)
         return final
     finally:
         shutil.rmtree(work, ignore_errors=True)
-
-
-def run_download(url, height, cookies_text, bar):
-    """Main thread: download ကို thread နဲ့ run ပြီး % / MB / speed / ETA ကို bar မှာ live ပြ"""
-    S = DL()
-
-    def work():
-        try:
-            S.set(result=fetch_link(url, height, S, cookies_text))
-        except Exception as ex:  # noqa: BLE001
-            S.set(err=ex)
-        finally:
-            S.set(finished=True)
-
-    threading.Thread(target=work, daemon=True).start()
-    best, speed, last_d, last_t = 0.0, 0.0, 0.0, time.time()
-    while not S.finished:
-        time.sleep(0.2)
-        with S.lock:
-            stage, kind, done, total = S.stage, S.kind, S.done, S.total
-            base, w = S.base, S.w
-        now = time.time()
-        if now - last_t >= 0.5:
-            inst = max(0.0, (done - last_d) / (now - last_t))
-            speed = inst if speed == 0 else 0.6 * speed + 0.4 * inst
-            last_d, last_t = done, now
-        frac = min(done / total, 1.0) if total else 0.0
-        best = max(best, min(base + w * frac, 1.0))
-        if kind == "bytes":
-            if total:
-                eta = (total - done) / speed if speed > 1 else 0
-                txt = (f"{stage} {best*100:.0f}% · {done/1e6:.1f}/{total/1e6:.1f} MB · "
-                       f"{speed/1e6:.1f} MB/s" + (f" · ကျန် {eta:.0f}s" if eta else ""))
-            else:
-                txt = f"{stage} {done/1e6:.1f} MB · {speed/1e6:.1f} MB/s"
-        else:
-            txt = f"{stage} {best*100:.0f}%"
-        bar.progress(best, text=txt)
-    bar.progress(1.0, text="✅ 100%")
-    if S.err:
-        raise S.err
-    return S.result
 
 
 # ====================================================================
@@ -1003,10 +824,10 @@ if mode.startswith("🔗"):
                            placeholder="https://...", key="link_url")
     if st.button("⬇️ Link ကနေ ဆွဲမယ်", use_container_width=True, disabled=not url_in.strip()):
         with st.status("⬇️ Video ဆွဲနေတယ်...", expanded=True) as ds:
-            dbar = st.progress(0.0, text="စတင်နေတယ်...")
+            dbar = st.progress(0.0)
             t_dl = time.time()
             try:
-                p = run_download(url_in, height, secret("YT_COOKIES") or None, dbar)
+                p = fetch_link(url_in, height, dbar, secret("YT_COOKIES") or None)
                 paths = st.session_state.setdefault("up_paths", [])
                 if p not in paths:
                     paths.append(p)
