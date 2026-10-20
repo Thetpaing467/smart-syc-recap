@@ -110,7 +110,7 @@ def _gclient(space, token):
 
 
 class VoxEngine:
-    """VoxCPM Space များကို အစဉ်လိုက် စမ်းမယ်။ မရရင် None ပြန် (Edge TTS ကို ခေါ်ရန်)။"""
+    """VoxCPM Space များကို အစဉ်လိုက် စမ်းမယ်။ မရရင် None ပြန် (Edge TTS ကို မခေါ်တော့ - caller က retry/error ပြမယ်)။"""
 
     def __init__(self, ref_path=None, token=None):
         self.ref = ref_path
@@ -120,6 +120,14 @@ class VoxEngine:
         self.dead = set()
         self.active = None
         self.last_err = ""
+        self.lock = threading.Lock()
+
+    def reset(self):
+        """Space အားလုံးကို ပြန်စမ်းခွင့်ပေး"""
+        with self.lock:
+            self.dead.clear()
+            self.fails = {i: 0 for i in range(len(VOX_SPACES))}
+            self.clients = {}
 
     def synth(self, text, out_wav):
         from gradio_client import handle_file
@@ -131,6 +139,7 @@ class VoxEngine:
             sp = VOX_SPACES[i]
             if sp["type"] == "burmese" and not self.ref:
                 self.dead.add(i)          # reference audio မပါရင် ဒီ space မသုံးနိုင်
+                self.last_err = f"{sp['space']}: reference audio လိုအပ်တယ်"
                 continue
             try:
                 cl = self.clients.get(i)
@@ -608,16 +617,30 @@ with st.expander("⚙️ Settings", expanded=False):
 
 with st.expander("🔊 အသံ (Voice)", expanded=False):
     engine = st.radio("TTS engine",
-                      ["Edge TTS", "VoxCPM (မရရင် Edge TTS auto)"], horizontal=False)
-    voice = st.selectbox("Edge voice", ["my-MM-ThihaNeural", "my-MM-NilarNeural"],
-                         format_func=lambda v: "Thiha (ယောက်ျား)" if "Thiha" in v else "Nilar (မိန်းမ)")
-    rate_n = st.slider("Edge speed %", -50, 100, 0, 5)
-    tts_workers = st.slider("TTS တစ်ပြိုင်နက် အရေအတွက်", 1, 10, 6,
-                            help="များရင်မြန်တယ်။ Edge က error ပေးရင် လျှော့ပါ (VoxCPM မှာ 1 ပဲသုံး)")
+                      ["Edge TTS", "VoxCPM (Edge TTS / Thiha မသုံးဘူး)"], horizontal=False)
+    is_vox = engine.startswith("Vox")
+
+    # Edge setting တွေကို Edge ရွေးမှပဲ ပြ — VoxCPM မှာ Thiha/Nilar လုံးဝ မပါ
+    voice, rate_n = "my-MM-ThihaNeural", 0
+    if not is_vox:
+        voice = st.selectbox("Edge voice", ["my-MM-ThihaNeural", "my-MM-NilarNeural"],
+                             format_func=lambda v: "Thiha (ယောက်ျား)" if "Thiha" in v else "Nilar (မိန်းမ)")
+        rate_n = st.slider("Edge speed %", -50, 100, 0, 5)
+        tts_workers = st.slider("TTS တစ်ပြိုင်နက် အရေအတွက်", 1, 10, 6,
+                                help="များရင်မြန်တယ်။ Edge က error ပေးရင် လျှော့ပါ")
+    else:
+        tts_workers = 1
+
     ref_up = None
-    if engine.startswith("Vox"):
-        ref_up = st.file_uploader("🎤 Reference audio (optional)", type=["wav", "mp3", "m4a"])
-        st.caption("VoxCPM Space တွေက queue/sleep ဖြစ်တတ်တယ်။ မရရင် စာကြောင်းတစ်ခုချင်း Edge TTS နဲ့ အစားထိုးမယ်။")
+    vox_retry = 4
+    if is_vox:
+        ref_up = st.file_uploader("🎤 Reference audio (အသံတစ်သံတည်း ဖြစ်ချင်ရင် တင်ပါ)",
+                                  type=["wav", "mp3", "m4a"])
+        vox_retry = st.slider("VoxCPM ပြန်စမ်းအကြိမ် (စာကြောင်းတစ်ခုချင်း)", 1, 8, 4,
+                              help="Space sleep/queue ဖြစ်ရင် ပြန်စမ်းမယ်။ ကုန်ရင် Edge မသုံးဘဲ error ပြမယ်")
+        st.caption("VoxCPM ရွေးထားရင် Edge TTS (Thiha/Nilar) လုံးဝ မဝင်ပါ။ "
+                   "VoxCPM မရရင် error ပြပြီး ရပ်မယ်၊ ခဏနေ ပြန်စမ်းပါ။ "
+                   "Reference audio တင်ရင် စာကြောင်းတိုင်း အသံတူမယ်။")
 
 with st.expander("🎨 စာတန်း (PNG) + Neon", expanded=False):
     use_sub = st.toggle("PNG စာတန်းထည့်", value=True)
@@ -768,7 +791,7 @@ if st.session_state.get("units"):
 
             # ---------------- TTS (တစ်ပြိုင်နက်)
             vox = None
-            if engine.startswith("Vox"):
+            if is_vox:
                 ref_path = None
                 if ref_up:
                     ref_path = os.path.join(wd, "ref.wav")
@@ -777,15 +800,25 @@ if st.session_state.get("units"):
                 vox = VoxEngine(ref_path, hf_token)
 
             def do_line(i):
-                raw_audio = f"{wd}/a{i:04d}_raw"
                 wav = f"{wd}/a{i:04d}.wav"
-                used = None
                 if vox is not None:
-                    used = vox.synth(my_list[i], raw_audio + ".wav")
-                    if used:
-                        raw_audio += ".wav"
-                if not used:
-                    raw_audio += ".mp3"
+                    # ---- VoxCPM သီးသန့် (Edge fallback မရှိ)
+                    raw_audio = f"{wd}/a{i:04d}_raw.wav"
+                    used = None
+                    for attempt in range(vox_retry):
+                        used = vox.synth(my_list[i], raw_audio)
+                        if used:
+                            break
+                        vox.reset()              # space ကို ပြန်စမ်းခွင့်ပေး
+                        time.sleep(3)
+                    if not used:
+                        raise RuntimeError(
+                            f"VoxCPM မအောင်မြင်ပါ (စာကြောင်း #{i}): {vox.last_err}\n\n"
+                            "Edge TTS (Thiha) ကို မသုံးထားပါ။ Space sleep/queue ဖြစ်နေနိုင်လို့ "
+                            "ခဏနေပြီး ပြန်စမ်းပါ။")
+                else:
+                    # ---- Edge TTS သီးသန့်
+                    raw_audio = f"{wd}/a{i:04d}_raw.mp3"
                     for attempt in range(4):
                         try:
                             tts_edge(my_list[i], voice, rate, raw_audio, proxy)
@@ -796,7 +829,7 @@ if st.session_state.get("units"):
                                     f"Edge TTS မအောင်မြင်ပါ (စာကြောင်း #{i}): {ex}\n\n{my_list[i]}")
                             time.sleep(1.5)
                 sh(["ffmpeg", "-y", "-i", raw_audio, "-af", TRIM, "-ar", "44100", "-ac", "1", wav])
-                return i, wav_dur(wav), bool(used)
+                return i, wav_dur(wav), vox is not None
 
             durs = [0.0] * n
             vox_ok = 0
@@ -817,13 +850,12 @@ if st.session_state.get("units"):
                     except Exception:
                         for f_ in futs:
                             f_.cancel()
+                        tst.update(label="🔊 အသံထုတ် မအောင်မြင်ပါ", state="error")
                         raise
                 T["🔊 အသံထုတ် (TTS)"] = time.time() - t_a
                 msg = f"🔊 အသံ ပြီးပြီ · {fmt_t(T['🔊 အသံထုတ် (TTS)'])}"
                 if vox is not None:
                     msg += f" (VoxCPM: {vox_ok}/{n})"
-                    if vox_ok < n and vox.last_err:
-                        st.caption(f"Vox error: {vox.last_err}")
                 tst.update(label=msg, state="complete")
 
             # ---------------- အသံ ပေါင်း
