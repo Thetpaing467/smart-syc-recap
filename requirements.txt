@@ -6,5 +6,7 @@ pandas
 pillow
 opencv-python-headless
 edge-tts
-google-genai
 gradio_client
+yt-dlp
+gdown
+requests
