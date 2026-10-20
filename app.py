@@ -12,6 +12,7 @@ import queue
 import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 import cv2
 import numpy as np
@@ -42,7 +43,7 @@ TRIM = (
 
 
 # ====================================================================
-# 🎬 CLEAN DARK UI (no fake elements)
+# 🎬 CLEAN DARK UI
 # ====================================================================
 def inject_css():
     st.markdown(
@@ -58,279 +59,91 @@ def inject_css():
             --accent: #fe2c55;
             --accent-2: #25f4ee;
         }
-
-        /* Hide Streamlit chrome */
         #MainMenu, footer, header { visibility: hidden; }
         .stDeployButton, div[data-testid="stToolbar"], div[data-testid="stDecoration"] { display: none; }
-
-        /* Background */
         .stApp { background: var(--bg); color: var(--text); }
-        .main .block-container {
-            padding: 1.2rem 1rem 3rem 1rem;
-            max-width: 620px;
-        }
-
-        /* Typography */
+        .main .block-container { padding: 1.2rem 1rem 3rem 1rem; max-width: 620px; }
         h1, h2, h3, h4, h5, h6 { color: var(--text) !important; letter-spacing: -0.01em; }
         p, span, label, div { color: var(--text); }
         .stCaption, [data-testid="stCaptionContainer"] { color: var(--muted) !important; }
         a { color: var(--accent-2); }
-
-        /* Title */
-        .title-block {
-            text-align: center;
-            padding: 0.8rem 0 1.4rem;
-        }
+        .title-block { text-align: center; padding: 0.8rem 0 1.4rem; }
         .title-block h1 {
-            font-size: 1.9rem !important;
-            font-weight: 800 !important;
-            margin: 0 !important;
+            font-size: 1.9rem !important; font-weight: 800 !important; margin: 0 !important;
             background: linear-gradient(90deg, var(--accent-2), var(--accent));
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
         }
-        .title-block p {
-            color: var(--muted) !important;
-            font-size: 0.85rem;
-            margin-top: 0.35rem;
-        }
-
-        /* Section header (numbers only, no fake tab bar) */
+        .title-block p { color: var(--muted) !important; font-size: 0.85rem; margin-top: 0.35rem; }
         .section-head {
-            display: flex;
-            align-items: center;
-            gap: 0.55rem;
-            margin: 1.4rem 0 0.7rem;
-            font-weight: 700;
-            font-size: 1rem;
+            display: flex; align-items: center; gap: 0.55rem;
+            margin: 1.4rem 0 0.7rem; font-weight: 700; font-size: 1rem;
         }
         .section-head .num {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            width: 24px;
-            height: 24px;
-            border-radius: 50%;
+            display: inline-flex; align-items: center; justify-content: center;
+            width: 24px; height: 24px; border-radius: 50%;
             background: linear-gradient(135deg, var(--accent-2), var(--accent));
-            color: #000;
-            font-size: 0.78rem;
-            font-weight: 900;
-            flex-shrink: 0;
+            color: #000; font-size: 0.78rem; font-weight: 900; flex-shrink: 0;
         }
-
-        /* Buttons */
         .stButton > button {
-            background: var(--card-2) !important;
-            border: 1px solid var(--border) !important;
-            border-radius: 10px !important;
-            color: var(--text) !important;
-            font-weight: 600 !important;
-            padding: 0.65rem 1rem !important;
-            transition: all 0.15s ease !important;
-            width: 100%;
-            font-size: 0.92rem !important;
+            background: var(--card-2) !important; border: 1px solid var(--border) !important;
+            border-radius: 10px !important; color: var(--text) !important;
+            font-weight: 600 !important; padding: 0.65rem 1rem !important;
+            transition: all 0.15s ease !important; width: 100%; font-size: 0.92rem !important;
         }
-        .stButton > button:hover {
-            background: #2a2a31 !important;
-            border-color: #3a3a42 !important;
-        }
-        .stButton > button:active { transform: scale(0.99); }
+        .stButton > button:hover { background: #2a2a31 !important; border-color: #3a3a42 !important; }
         .stButton > button:disabled { opacity: 0.35 !important; }
-
-        /* Primary button */
         .stButton > button[kind="primary"] {
-            background: var(--accent) !important;
-            border: 1px solid var(--accent) !important;
-            color: #fff !important;
-            font-weight: 700 !important;
+            background: var(--accent) !important; border: 1px solid var(--accent) !important;
+            color: #fff !important; font-weight: 700 !important;
             box-shadow: 0 2px 10px rgba(254,44,85,0.3) !important;
         }
-        .stButton > button[kind="primary"]:hover {
-            background: #ff0050 !important;
-            box-shadow: 0 3px 16px rgba(254,44,85,0.45) !important;
-        }
-
-        /* Download button */
+        .stButton > button[kind="primary"]:hover { background: #ff0050 !important; }
         .stDownloadButton > button {
             background: linear-gradient(135deg, var(--accent-2), var(--accent)) !important;
-            border: none !important;
-            border-radius: 10px !important;
-            color: #000 !important;
-            font-weight: 800 !important;
-            padding: 0.8rem 1rem !important;
-            font-size: 0.95rem !important;
-            transition: all 0.15s ease !important;
+            border: none !important; border-radius: 10px !important; color: #000 !important;
+            font-weight: 800 !important; padding: 0.8rem 1rem !important; font-size: 0.95rem !important;
         }
-        .stDownloadButton > button:hover {
-            transform: scale(1.01);
-            box-shadow: 0 4px 18px rgba(37,244,238,0.3) !important;
-        }
-
-        /* File uploader */
         section[data-testid="stFileUploadDropzone"] {
-            background: var(--card) !important;
-            border: 1.5px dashed var(--border) !important;
-            border-radius: 12px !important;
-            padding: 1.3rem 1rem !important;
+            background: var(--card) !important; border: 1.5px dashed var(--border) !important;
+            border-radius: 12px !important; padding: 1.3rem 1rem !important;
         }
-        section[data-testid="stFileUploadDropzone"]:hover {
-            border-color: var(--accent-2) !important;
-            background: #1a1a20 !important;
-        }
-        section[data-testid="stFileUploadDropzone"] svg { fill: var(--accent-2) !important; }
-
-        /* Expander */
+        section[data-testid="stFileUploadDropzone"]:hover { border-color: var(--accent-2) !important; }
         details {
-            background: var(--card) !important;
-            border-radius: 10px !important;
-            border: 1px solid var(--border) !important;
-            margin-bottom: 0.5rem !important;
-            overflow: hidden;
+            background: var(--card) !important; border-radius: 10px !important;
+            border: 1px solid var(--border) !important; margin-bottom: 0.5rem !important;
         }
-        details summary {
-            padding: 0.8rem 1rem !important;
-            font-weight: 600 !important;
-            color: var(--text) !important;
-            font-size: 0.92rem !important;
+        details summary { padding: 0.8rem 1rem !important; font-weight: 600 !important; color: var(--text) !important; }
+        .stTextInput input, .stTextArea textarea {
+            background: var(--card) !important; border: 1px solid var(--border) !important;
+            border-radius: 9px !important; color: var(--text) !important; font-size: 0.9rem !important;
         }
-        details summary:hover { background: var(--card-2) !important; }
-        details[open] summary { border-bottom: 1px solid var(--border) !important; }
-
-        /* Inputs */
-        .stTextInput input, .stTextArea textarea, .stNumberInput input {
-            background: var(--card) !important;
-            border: 1px solid var(--border) !important;
-            border-radius: 9px !important;
-            color: var(--text) !important;
-            font-size: 0.9rem !important;
-        }
-        .stTextArea textarea:focus, .stTextInput input:focus {
-            border-color: var(--accent-2) !important;
-            box-shadow: 0 0 0 2px rgba(37,244,238,0.15) !important;
-        }
-
-        /* Selectbox */
-        .stSelectbox > div > div {
-            background: var(--card) !important;
-            border: 1px solid var(--border) !important;
-            border-radius: 9px !important;
-        }
-
-        /* Radio pills */
-        .stRadio > div[role="radiogroup"] {
-            display: flex;
-            gap: 0.5rem;
-            flex-wrap: wrap;
-        }
+        .stRadio > div[role="radiogroup"] { display: flex; gap: 0.5rem; flex-wrap: wrap; }
         .stRadio > div[role="radiogroup"] > label {
-            background: var(--card);
-            padding: 0.5rem 0.9rem !important;
-            border-radius: 9px;
-            border: 1px solid var(--border);
-            cursor: pointer;
-            margin: 0 !important;
-            transition: all 0.15s ease;
+            background: var(--card); padding: 0.5rem 0.9rem !important;
+            border-radius: 9px; border: 1px solid var(--border); cursor: pointer; margin: 0 !important;
         }
-        .stRadio > div[role="radiogroup"] > label:hover {
-            border-color: var(--accent-2);
-            background: var(--card-2);
-        }
-
-        /* Slider */
-        .stSlider > div > div > div > div {
-            background: linear-gradient(90deg, var(--accent-2), var(--accent)) !important;
-        }
-
-        /* Progress */
-        .stProgress > div > div > div > div {
-            background: linear-gradient(90deg, var(--accent-2), var(--accent)) !important;
-        }
-
-        /* Code block */
+        .stProgress > div > div > div > div { background: linear-gradient(90deg, var(--accent-2), var(--accent)) !important; }
         .stCode, pre {
-            background: var(--card) !important;
-            border: 1px solid var(--border) !important;
-            border-radius: 9px !important;
-            color: var(--text) !important;
-            font-size: 0.78rem !important;
+            background: var(--card) !important; border: 1px solid var(--border) !important;
+            border-radius: 9px !important; color: var(--text) !important; font-size: 0.78rem !important;
         }
-        code {
-            background: var(--card-2) !important;
-            color: var(--accent-2) !important;
-            padding: 2px 6px;
-            border-radius: 5px;
-            font-size: 0.85em;
+        .stats-box {
+            background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+            padding: 0.7rem 0.9rem; margin: 0.5rem 0;
         }
-
-        /* Alerts */
-        .stAlert {
-            border-radius: 9px !important;
-            border: 1px solid var(--border) !important;
-            background: var(--card) !important;
-        }
-
-        /* Status */
-        div[data-testid="stStatusWidget"] {
-            background: var(--card) !important;
-            border: 1px solid var(--border) !important;
-            border-radius: 10px !important;
-        }
-
-        /* Image / Video */
-        img, video { border-radius: 12px !important; }
-        video { border: 1px solid var(--border); }
-
-        /* Divider */
-        hr {
-            border: none;
-            height: 1px;
-            background: var(--border);
-            margin: 1.3rem 0;
-        }
-
-        /* Result card */
+        .stats-box .row { display: flex; justify-content: space-between; padding: 0.35rem 0; font-size: 0.83rem; border-bottom: 1px solid #22222a; }
+        .stats-box .row:last-child { border-bottom: none; }
+        .stats-box .row .val { color: var(--accent-2); font-weight: 700; }
         .result-card {
-            background: var(--card);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            padding: 1rem 1.2rem;
-            margin-bottom: 0.8rem;
-            position: relative;
-            overflow: hidden;
+            background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+            padding: 1rem 1.2rem; margin-bottom: 0.8rem; position: relative; overflow: hidden;
         }
         .result-card::before {
-            content: "";
-            position: absolute;
-            top: 0; left: 0; right: 0;
-            height: 3px;
+            content: ""; position: absolute; top: 0; left: 0; right: 0; height: 3px;
             background: linear-gradient(90deg, var(--accent-2), var(--accent));
         }
         .result-card .title { font-size: 1rem; font-weight: 800; margin-bottom: 0.2rem; }
         .result-card .meta { font-size: 0.8rem; color: var(--muted); }
-
-        /* Timing rows */
-        .stats-box {
-            background: var(--card);
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            padding: 0.7rem 0.9rem;
-            margin: 0.5rem 0;
-        }
-        .stats-box .row {
-            display: flex;
-            justify-content: space-between;
-            padding: 0.35rem 0;
-            font-size: 0.83rem;
-            border-bottom: 1px solid #22222a;
-        }
-        .stats-box .row:last-child { border-bottom: none; }
-        .stats-box .row .val { color: var(--accent-2); font-weight: 700; }
-
-        /* Scrollbar */
-        ::-webkit-scrollbar { width: 6px; }
-        ::-webkit-scrollbar-track { background: var(--bg); }
-        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 6px; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -346,50 +159,34 @@ def secret(name, default=""):
     except Exception:
         return default
 
-
 def sh(cmd):
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
         raise RuntimeError(r.stderr[-1200:])
     return r.stdout
 
-
 def dur(path):
-    return float(
-        sh(["ffprobe", "-v", "error", "-show_entries", "format=duration",
-            "-of", "csv=p=0", path]).strip()
-    )
-
+    return float(sh(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path]).strip())
 
 def fmt_t(sec):
     sec = float(sec)
     return f"{sec:.1f} စက္ကန့်" if sec < 60 else f"{int(sec // 60)} မိနစ် {sec % 60:.0f} စက္ကန့်"
 
-
 def wav_dur(path):
     with wave.open(path) as w:
         return w.getnframes() / float(w.getframerate())
 
-
 def timing_html(d):
-    rows = "".join(
-        f'<div class="row"><span>{k}</span><span class="val">{fmt_t(v)}</span></div>'
-        for k, v in d.items()
-    )
+    rows = "".join(f'<div class="row"><span>{k}</span><span class="val">{fmt_t(v)}</span></div>' for k, v in d.items())
     return f'<div class="stats-box">{rows}</div>'
 
-
 def clean_my(text):
-    return re.sub(
-        r"[^\u1000-\u109F\uAA60-\uAA7F\uA9E0-\uA9FF\s0-9.,!?\"'%\-]", "", text
-    ).strip()
-
+    return re.sub(r"[^\u1000-\u109F\uAA60-\uAA7F\uA9E0-\uA9FF\s0-9.,!?\"'%\-]", "", text).strip()
 
 @st.cache_resource(show_spinner="Whisper model ဖွင့်နေတယ်...")
 def load_whisper(size):
     from faster_whisper import WhisperModel
-    return WhisperModel(size, device="cpu", compute_type="int8",
-                        cpu_threads=os.cpu_count() or 4)
+    return WhisperModel(size, device="cpu", compute_type="int8", cpu_threads=os.cpu_count() or 4)
 
 
 # ====================================================================
@@ -397,13 +194,10 @@ def load_whisper(size):
 # ====================================================================
 def tts_edge(text, voice, rate, mp3, proxy=None):
     import edge_tts
-
     async def run():
         kw = {"proxy": proxy} if proxy else {}
         await edge_tts.Communicate(text, voice, rate=rate, **kw).save(mp3)
-
     asyncio.run(run())
-
 
 def _gclient(space, token):
     from gradio_client import Client
@@ -413,7 +207,6 @@ def _gclient(space, token):
         except TypeError:
             return Client(space, hf_token=token)
     return Client(space)
-
 
 class VoxEngine:
     def __init__(self, ref_path=None, token=None):
@@ -443,18 +236,9 @@ class VoxEngine:
                     self.clients[i] = cl
                 rf = handle_file(self.ref) if self.ref else None
                 if sp["type"] == "demo":
-                    res = cl.predict(
-                        text_input=text,
-                        control_instruction="A warm young woman, calm and expressive",
-                        reference_wav_path_input=rf,
-                        use_prompt_text=False, prompt_text_input="",
-                        cfg_value_input=2.0, do_normalize=True, denoise=False,
-                        api_name="/generate")
+                    res = cl.predict(text_input=text, control_instruction="A warm young woman, calm and expressive", reference_wav_path_input=rf, use_prompt_text=False, prompt_text_input="", cfg_value_input=2.0, do_normalize=True, denoise=False, api_name="/generate")
                 else:
-                    res = cl.predict(
-                        target_text=text, ref_audio=rf,
-                        ref_text="မြန်မာ အသံနမူနာ", cfg_value=2.0,
-                        inference_timesteps=10, api_name="/tts")
+                    res = cl.predict(target_text=text, ref_audio=rf, ref_text="မြန်မာ အသံနမူနာ", cfg_value=2.0, inference_timesteps=10, api_name="/tts")
                 p = res[0] if isinstance(res, (tuple, list)) else res
                 shutil.copy(p, out_wav)
                 self.active = i
@@ -480,17 +264,14 @@ def find_font():
         glob.glob(os.path.join(here, "fonts", "*.ttf")) + glob.glob(os.path.join(here, "fonts", "*.otf"))
     if repo:
         return repo[0]
-    sysf = glob.glob("/usr/share/fonts/**/*.ttf", recursive=True) + \
-        glob.glob("/usr/share/fonts/**/*.otf", recursive=True)
+    sysf = glob.glob("/usr/share/fonts/**/*.ttf", recursive=True) + glob.glob("/usr/share/fonts/**/*.otf", recursive=True)
     for key in ("padauk", "myanmar", "pyidaung", "notosansmyanmar"):
         for f in sysf:
             if key in os.path.basename(f).lower():
                 return f
     return None
 
-
 _FONT_CACHE = {}
-
 
 def get_font(path, size, layout="raqm"):
     key = (path, size, layout)
@@ -506,10 +287,8 @@ def get_font(path, size, layout="raqm"):
                 _FONT_CACHE[key] = ImageFont.load_default()
     return _FONT_CACHE[key]
 
-
 def _is_start(c):
     return (0x1000 <= c <= 0x1021) or (0x1023 <= c <= 0x1027) or c in (0x1029, 0x102A, 0x103F)
-
 
 def split_syll(word):
     idx = [0]
@@ -526,7 +305,6 @@ def split_syll(word):
     idx.append(n)
     return [word[idx[k]:idx[k + 1]] for k in range(len(idx) - 1)]
 
-
 def wrap_text(text, font, maxw):
     lines, cur = [], ""
     for word in text.split():
@@ -542,7 +320,6 @@ def wrap_text(text, font, maxw):
     if cur:
         lines.append(cur)
     return lines
-
 
 def split_for_sub(text, mc=36):
     sents = [s.strip() for s in re.split(r"(?<=။)", text) if s.strip()]
@@ -565,9 +342,7 @@ def split_for_sub(text, mc=36):
             parts.append(cur)
     return parts or [text]
 
-
-def build_overlay(text, W, H, font_path, fs, pos_y, alpha=200, color=(255, 255, 255),
-                  bold=0, layout="raqm"):
+def build_overlay(text, W, H, font_path, fs, pos_y, alpha=200, color=(255, 255, 255), bold=0, layout="raqm"):
     font = get_font(font_path, fs, layout)
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
@@ -581,18 +356,15 @@ def build_overlay(text, W, H, font_path, fs, pos_y, alpha=200, color=(255, 255, 
     box_x = 0
     max_y = max(0, H - box_h)
     box_y = max(0, min(int(pos_y / 100 * max_y), max_y))
-    d.rounded_rectangle([box_x, box_y, box_x + box_w, box_y + box_h],
-                        radius=int(fs * 0.66), fill=(0, 0, 0, alpha))
+    d.rounded_rectangle([box_x, box_y, box_x + box_w, box_y + box_h], radius=int(fs * 0.66), fill=(0, 0, 0, alpha))
     ink = (int(color[0]), int(color[1]), int(color[2]), 255)
     sw = max(1, round(fs / 15))
     ty = box_y + pad_y
     for ln in lines:
         lw = font.getlength(ln)
         lx = box_x + (box_w - lw) / 2
-        d.text((lx, ty), ln, font=font, fill=(0, 0, 0, 255),
-               stroke_width=sw, stroke_fill=(0, 0, 0, 255))
-        d.text((lx, ty), ln, font=font, fill=ink,
-               stroke_width=1 if bold else 0, stroke_fill=ink)
+        d.text((lx, ty), ln, font=font, fill=(0, 0, 0, 255), stroke_width=sw, stroke_fill=(0, 0, 0, 255))
+        d.text((lx, ty), ln, font=font, fill=ink, stroke_width=1 if bold else 0, stroke_fill=ink)
         ty += lh
     arr = np.array(img)
     rows = np.where(arr[:, :, 3].any(axis=1))[0]
@@ -604,18 +376,15 @@ def build_overlay(text, W, H, font_path, fs, pos_y, alpha=200, color=(255, 255, 
     bgr = crop[:, :, [2, 1, 0]].astype(np.float32)
     return {"y0": y0, "y1": y1, "inv": 1.0 - a, "pre": bgr * a}
 
-
 def blend_overlay(fr, ov):
     reg = fr[ov["y0"]:ov["y1"]].astype(np.float32) * ov["inv"] + ov["pre"]
     fr[ov["y0"]:ov["y1"]] = np.clip(reg, 0, 255).astype(np.uint8)
-
 
 class Neon:
     BASE = np.array([12, 8, 10], np.float32)
     CYAN = np.array([255, 255, 0], np.float32)
     MAGENTA = np.array([110, 30, 255], np.float32)
     IDLE = 0.14
-
     def __init__(self, W, H, th=10, speed=0.4, tail=0.5):
         self.W, self.H, self.speed, self.tail = W, H, speed, tail
         th = max(2, min(th, min(W, H) // 4))
@@ -625,14 +394,10 @@ class Neon:
         ys, xs = np.nonzero(ring)
         dt, db, dl, dr = ys, H - 1 - ys, xs, W - 1 - xs
         m = np.minimum.reduce([dt, db, dl, dr])
-        S = np.where(m == dt, xs,
-            np.where(m == dr, W + ys,
-            np.where(m == db, 2 * W + H + (W - xs),
-                     2 * W + 2 * H - ys))).astype(np.int64)
+        S = np.where(m == dt, xs, np.where(m == dr, W + ys, np.where(m == db, 2 * W + H + (W - xs), 2 * W + 2 * H - ys))).astype(np.int64)
         self.ys, self.xs = ys, xs
         self.Si = S % self.P
         self.P_arr = np.arange(self.P, dtype=np.float32)
-
     def _layer(self, h, color):
         P = self.P
         dist = (h - self.P_arr) % P
@@ -640,13 +405,11 @@ class Neon:
         glow = self.IDLE + (1.0 - self.IDLE) * (a ** 0.55)
         core = np.clip(1.0 - dist / (0.06 * P), 0, 1) ** 2
         return color * glow[:, None] + 255.0 * 0.9 * core[:, None]
-
     def apply(self, fr, t):
         head = (t * self.speed * self.P / 4.0) % self.P
         c = self.BASE + self._layer(head, self.CYAN) + self._layer(head + self.P / 2, self.MAGENTA)
         strip = np.clip(c, 0, 255).astype(np.uint8)
         fr[self.ys, self.xs] = strip[self.Si]
-
 
 def zoom_flip(fr, zoom, flip):
     if zoom > 1.001:
@@ -658,10 +421,7 @@ def zoom_flip(fr, zoom, flip):
         fr = fr[:, ::-1]
     return np.ascontiguousarray(fr)
 
-
-def render_final(src, audio, out, plan, total, height, subs, font_path, fs_pct, pos_y,
-                 neon_on, neon_th, neon_speed, flip, zoom, style=None, preset="ultrafast",
-                 progress=None, fps_out=30):
+def render_final(src, audio, out, plan, total, height, subs, font_path, fs_pct, pos_y, neon_on, neon_th, neon_speed, flip, zoom, style=None, preset="ultrafast", progress=None, fps_out=30):
     style = style or {}
     cap = cv2.VideoCapture(src)
     sfps = cap.get(cv2.CAP_PROP_FPS) or 30.0
@@ -717,11 +477,7 @@ def render_final(src, audio, out, plan, total, height, subs, font_path, fs_pct, 
 
     log_path = out + ".log"
     log = open(log_path, "wb")
-    cmd = ["ffmpeg", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{W}x{H}",
-           "-r", str(fps_out), "-i", "-", "-i", audio, "-map", "0:v", "-map", "1:a:0",
-           "-c:v", "libx264", "-preset", preset, "-crf", "27", "-pix_fmt", "yuv420p",
-           "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart",
-           "-t", f"{total:.3f}", out]
+    cmd = ["ffmpeg", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{W}x{H}", "-r", str(fps_out), "-i", "-", "-i", audio, "-map", "0:v", "-map", "1:a:0", "-c:v", "libx264", "-preset", preset, "-crf", "27", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", "-t", f"{total:.3f}", out]
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=log)
     th = threading.Thread(target=producer, daemon=True)
     th.start()
@@ -773,9 +529,7 @@ def render_final(src, audio, out, plan, total, height, subs, font_path, fs_pct, 
         progress.progress(1.0)
     return out
 
-
-def make_preview(path, height, text, font_path, fs_pct, pos_y, neon_on, neon_th,
-                 neon_speed, flip, zoom, style=None):
+def make_preview(path, height, text, font_path, fs_pct, pos_y, neon_on, neon_th, neon_speed, flip, zoom, style=None):
     cap = cv2.VideoCapture(path)
     cap.set(cv2.CAP_PROP_POS_MSEC, 1000)
     ok, fr = cap.read()
@@ -798,18 +552,9 @@ def make_preview(path, height, text, font_path, fs_pct, pos_y, neon_on, neon_th,
             blend_overlay(fr, ov)
     return cv2.cvtColor(fr, cv2.COLOR_BGR2RGB)
 
-
 def build_prompt(units):
     lines = "\n".join(f"[{i}] {u['src']}" for i, u in enumerate(units))
-    return (
-        "You are a Burmese (Myanmar) recap-video narrator. Translate every numbered line "
-        "below into natural spoken Burmese narration (storyteller style). Rules: do NOT "
-        "summarize, shorten or skip; do NOT move content between lines; keep character "
-        "names consistent across all lines; use ONLY Burmese script (Myanmar Unicode), "
-        "no English/Chinese letters. Output exactly one line per input line in the format "
-        "[number] Burmese text -- same numbers, no extra comments.\n\n" + lines
-    )
-
+    return ("You are a Burmese (Myanmar) recap-video narrator. Translate every numbered line below into natural spoken Burmese narration (storyteller style). Rules: do NOT summarize, shorten or skip; do NOT move content between lines; keep character names consistent across all lines; use ONLY Burmese script (Myanmar Unicode), no English/Chinese letters. Output exactly one line per input line in the format [number] Burmese text -- same numbers, no extra comments.\n\n" + lines)
 
 def parse_numbered(text, n):
     got = {}
@@ -824,7 +569,6 @@ def parse_numbered(text, n):
             got = {i: plain[i] for i in range(n)}
     return got
 
-
 def reset_job():
     wd = st.session_state.get("wd")
     if wd and os.path.isdir(wd):
@@ -835,7 +579,6 @@ def reset_job():
         except Exception:
             pass
 
-
 def cleanup_uploads():
     for p in st.session_state.get("up_paths", []):
         try:
@@ -843,8 +586,8 @@ def cleanup_uploads():
         except Exception:
             pass
     st.session_state["up_paths"] = []
+    st.session_state.pop("link_path", None)
     st.session_state["up_key"] = st.session_state.get("up_key", 0) + 1
-
 
 def cleanup_after_download():
     wd = st.session_state.get("wd")
@@ -854,7 +597,6 @@ def cleanup_after_download():
         st.session_state.pop(k, None)
     cleanup_uploads()
     st.session_state["cleaned"] = True
-
 
 def save_upload(up):
     key = hashlib.md5(f"{up.name}-{up.size}".encode()).hexdigest()[:12]
@@ -867,16 +609,300 @@ def save_upload(up):
         paths.append(path)
     return path
 
-
 def section(num, title):
-    st.markdown(
-        f'<div class="section-head"><span class="num">{num}</span>{title}</div>',
-        unsafe_allow_html=True,
-    )
+    st.markdown(f'<div class="section-head"><span class="num">{num}</span>{title}</div>', unsafe_allow_html=True)
 
 
 # ====================================================================
-# UI
+# Link Download Logic
+# ====================================================================
+VIDEO_EXT = (".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi", ".ts", ".flv")
+
+class DL:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.stage = "စတင်နေတယ်..."
+        self.kind = "bytes"
+        self.done = 0.0
+        self.total = 0.0
+        self.base = 0.0
+        self.w = 0.9
+        self.err = None
+        self.result = None
+        self.finished = False
+
+    def set(self, **kw):
+        with self.lock:
+            for k, v in kw.items():
+                setattr(self, k, v)
+
+    def add(self, n):
+        with self.lock:
+            self.done += n
+
+def _fix_dropbox(url):
+    u = urlparse(url)
+    q = parse_qs(u.query)
+    q["dl"] = ["1"]
+    return urlunparse(u._replace(query=urlencode(q, doseq=True)))
+
+def _dl_direct(url, out, S, conns=8, part=4 << 20):
+    import requests
+    hdr = {"User-Agent": "Mozilla/5.0"}
+    sess = requests.Session()
+    ad = requests.adapters.HTTPAdapter(pool_connections=conns, pool_maxsize=conns, max_retries=2)
+    sess.mount("https://", ad)
+    sess.mount("http://", ad)
+
+    def single(resp):
+        with open(out, "wb") as f:
+            for ch in resp.iter_content(1 << 20):
+                f.write(ch)
+                S.add(len(ch))
+
+    r = sess.get(url, stream=True, timeout=30, allow_redirects=True, headers=hdr)
+    try:
+        r.raise_for_status()
+        if "text/html" in r.headers.get("content-type", "").lower():
+            raise RuntimeError("Link က video ဖိုင် မဟုတ်ဘဲ web page ဖြစ်နေတယ်")
+        total = int(r.headers.get("content-length") or 0)
+        can_range = ("bytes" in r.headers.get("accept-ranges", "").lower() and total > 2 * part and not r.headers.get("content-encoding"))
+        final_url = r.url
+        S.set(total=total, done=0)
+        if not can_range:
+            single(r)
+            if not os.path.exists(out) or os.path.getsize(out) < 1024:
+                raise RuntimeError("ဖိုင် မရပါ")
+            return out
+    finally:
+        r.close()
+
+    with open(out, "wb") as f:
+        f.truncate(total)
+    spans = [(s, min(s + part, total) - 1) for s in range(0, total, part)]
+
+    def fetch(span):
+        a, b = span
+        last = None
+        for _ in range(4):
+            wrote = 0
+            try:
+                with sess.get(final_url, headers={**hdr, "Range": f"bytes={a}-{b}"}, stream=True, timeout=30) as rr:
+                    if rr.status_code != 206:
+                        raise RuntimeError("Range မထောက်ပံ့")
+                    with open(out, "r+b") as f:
+                        f.seek(a)
+                        for ch in rr.iter_content(256 << 10):
+                            f.write(ch)
+                            wrote += len(ch)
+                            S.add(len(ch))
+                return
+            except Exception as ex:
+                S.add(-wrote)
+                last = ex
+                time.sleep(0.5)
+        raise last
+
+    try:
+        with ThreadPoolExecutor(max_workers=conns) as pool:
+            for fu in as_completed([pool.submit(fetch, s) for s in spans]):
+                fu.result()
+    except Exception:
+        S.set(done=0)
+        with sess.get(final_url, stream=True, timeout=30, headers=hdr) as rr:
+            rr.raise_for_status()
+            single(rr)
+    if not os.path.exists(out) or os.path.getsize(out) < 1024:
+        raise RuntimeError("ဖိုင် မရပါ")
+    return out
+
+def _dl_gdrive(url, out, S):
+    import gdown
+    box = {}
+    def run():
+        try:
+            gdown.download(url, out, quiet=True, fuzzy=True)
+        except Exception as ex:
+            box["e"] = ex
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    d = os.path.dirname(out)
+    while t.is_alive():
+        try:
+            S.set(done=sum(os.path.getsize(os.path.join(d, x)) for x in os.listdir(d)))
+        except Exception:
+            pass
+        time.sleep(0.3)
+    if "e" in box:
+        raise box["e"]
+    if not os.path.exists(out) or os.path.getsize(out) < 1024:
+        raise RuntimeError("Google Drive ဖိုင် မရပါ")
+    return out
+
+def _dl_ytdlp(url, out_noext, height, S, cookies_text=None):
+    import yt_dlp
+    h = int(height)
+    parts = {}
+    def hook(d):
+        fn = d.get("filename")
+        if d.get("status") == "downloading":
+            tot = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+            parts[fn] = (d.get("downloaded_bytes", 0), tot)
+        elif d.get("status") == "finished":
+            db = d.get("downloaded_bytes") or d.get("total_bytes") or 0
+            parts[fn] = (db, db)
+        vals = list(parts.values())
+        S.set(done=sum(v[0] for v in vals), total=sum(v[1] for v in vals))
+
+    opts = {
+        "format": (f"bv*[height<={h}][vcodec^=avc1]+ba[acodec^=mp4a]/b[height<={h}][ext=mp4]/bv*[height<={h}]+ba/b[height<={h}]/bv*+ba/b"),
+        "outtmpl": out_noext + ".%(ext)s",
+        "merge_output_format": "mp4",
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "retries": 5,
+        "fragment_retries": 5,
+        "socket_timeout": 20,
+        "concurrent_fragment_downloads": 16,
+        "http_chunk_size": 10 << 20,
+        "progress_hooks": [hook],
+    }
+    if cookies_text:
+        cf = out_noext + "_cookies.txt"
+        with open(cf, "w") as f:
+            f.write(cookies_text)
+        opts["cookiefile"] = cf
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        ydl.download([url])
+    files = [p for p in glob.glob(out_noext + ".*") if not p.endswith((".part", ".ytdl", "_cookies.txt"))]
+    if not files:
+        raise RuntimeError("yt-dlp ဖိုင် မထွက်ပါ")
+    return max(files, key=os.path.getsize)
+
+def _ffmpeg_prog(cmd, S):
+    with tempfile.TemporaryFile() as errf:
+        p = subprocess.Popen(cmd + ["-progress", "pipe:1", "-nostats"], stdout=subprocess.PIPE, stderr=errf, text=True)
+        for line in p.stdout:
+            if line.startswith("out_time_ms="):
+                try:
+                    S.set(done=int(line.split("=")[1]) / 1e6)
+                except ValueError:
+                    pass
+        p.wait()
+        if p.returncode != 0:
+            errf.seek(0)
+            raise RuntimeError(errf.read()[-800:].decode("utf-8", "ignore"))
+
+def _ensure_mp4(raw, final, height, S):
+    try:
+        codec = sh(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name", "-of", "csv=p=0", raw]).strip()
+    except Exception:
+        codec = ""
+    if not codec:
+        raise RuntimeError("Video stream မတွေ့ပါ (ဖိုင်က video မဟုတ်နိုင်)")
+    S.set(stage="🔧 Video ပြင်နေတယ်...", kind="time", base=0.9, w=0.1, done=0, total=0)
+    if codec == "h264":
+        if raw.lower().endswith(".mp4"):
+            shutil.move(raw, final)
+            return final
+        try:
+            sh(["ffmpeg", "-y", "-i", raw, "-c", "copy", "-movflags", "+faststart", final])
+            return final
+        except Exception:
+            pass
+    try:
+        total = dur(raw)
+    except Exception:
+        total = 0
+    S.set(total=total, stage="🔧 Video ပြောင်းနေတယ် (h264)...")
+    _ffmpeg_prog(["ffmpeg", "-y", "-i", raw, "-vf", f"scale=-2:'min(ih,{int(height)})'", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "26", "-threads", "0", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", final], S)
+    return final
+
+def fetch_link(url, height, S, cookies_text=None):
+    url = url.strip()
+    if not re.match(r"^https?://", url, re.I):
+        raise ValueError("Link က http:// ဒါမှမဟုတ် https:// နဲ့ စရမယ်")
+    key = hashlib.md5(url.encode()).hexdigest()[:12]
+    final = f"/tmp/recap_up_{key}.mp4"
+    if os.path.exists(final) and os.path.getsize(final) > 1024:
+        S.set(stage="✅ ရှိပြီးသား (cache)", done=1, total=1, base=0.0, w=1.0)
+        return final
+    work = tempfile.mkdtemp(prefix="dl_")
+    try:
+        S.set(stage="⬇️ ဆွဲနေတယ်...", kind="bytes", base=0.0, w=0.9, done=0, total=0)
+        u = urlparse(url)
+        host, path_l = u.netloc.lower(), u.path.lower()
+        raw, errs = None, []
+        if "drive.google.com" in host or "docs.google.com" in host:
+            raw = os.path.join(work, "gd.bin")
+            _dl_gdrive(url, raw, S)
+        else:
+            if "dropbox.com" in host:
+                url = _fix_dropbox(url)
+                methods = ["direct", "ytdlp"]
+            elif path_l.endswith(VIDEO_EXT):
+                methods = ["direct", "ytdlp"]
+            else:
+                methods = ["ytdlp", "direct"]
+            for m in methods:
+                try:
+                    S.set(done=0, total=0)
+                    if m == "direct":
+                        raw = _dl_direct(url, os.path.join(work, "direct.bin"), S)
+                    else:
+                        raw = _dl_ytdlp(url, os.path.join(work, "yt"), height, S, cookies_text)
+                    break
+                except Exception as ex:
+                    errs.append(f"{m}: {str(ex)[:200]}")
+                    raw = None
+            if not raw:
+                raise RuntimeError("Link ကနေ မဆွဲနိုင်ပါ\n" + "\n".join(errs))
+        _ensure_mp4(raw, final, height, S)
+        return final
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+def run_download(url, height, cookies_text, bar):
+    S = DL()
+    def work():
+        try:
+            S.set(result=fetch_link(url, height, S, cookies_text))
+        except Exception as ex:
+            S.set(err=ex)
+        finally:
+            S.set(finished=True)
+    threading.Thread(target=work, daemon=True).start()
+    best, speed, last_d, last_t = 0.0, 0.0, 0.0, time.time()
+    while not S.finished:
+        time.sleep(0.2)
+        with S.lock:
+            stage, kind, done, total = S.stage, S.kind, S.done, S.total
+            base, w = S.base, S.w
+        now = time.time()
+        if now - last_t >= 0.5:
+            inst = max(0.0, (done - last_d) / (now - last_t))
+            speed = inst if speed == 0 else 0.6 * speed + 0.4 * inst
+            last_d, last_t = done, now
+        frac = min(done / total, 1.0) if total else 0.0
+        best = max(best, min(base + w * frac, 1.0))
+        if kind == "bytes":
+            if total:
+                eta = (total - done) / speed if speed > 1 else 0
+                txt = f"{stage} {best*100:.0f}% · {done/1e6:.1f}/{total/1e6:.1f} MB · {speed/1e6:.1f} MB/s" + (f" · ကျန် {eta:.0f}s" if eta else "")
+            else:
+                txt = f"{stage} {done/1e6:.1f} MB · {speed/1e6:.1f} MB/s"
+        else:
+            txt = f"{stage} {best*100:.0f}%"
+        bar.progress(best, text=txt)
+    bar.progress(1.0, text="✅ 100%")
+    if S.err:
+        raise S.err
+    return S.result
+
+
+# ====================================================================
+# UI MAIN
 # ====================================================================
 inject_css()
 
@@ -902,13 +928,8 @@ with st.expander("⚙️ Settings", expanded=False):
     preset = st.selectbox("Render speed", ["ultrafast", "superfast", "veryfast"], index=0)
 
 with st.expander("🔊 အသံ (Voice)", expanded=False):
-    engine = st.radio(
-        "TTS engine",
-        ["Edge TTS", "VoxCPM (မရရင် Edge auto)"],
-        horizontal=True,
-    )
-    voice = st.selectbox("Edge voice", ["my-MM-ThihaNeural", "my-MM-NilarNeural"],
-                         format_func=lambda v: "👨 Thiha" if "Thiha" in v else "👩 Nilar")
+    engine = st.radio("TTS engine", ["Edge TTS", "VoxCPM (မရရင် Edge auto)"], horizontal=True)
+    voice = st.selectbox("Edge voice", ["my-MM-ThihaNeural", "my-MM-NilarNeural"], format_func=lambda v: "👨 Thiha" if "Thiha" in v else "👩 Nilar")
     rate_n = st.slider("Edge speed %", -50, 100, 0, 5)
     tts_workers = st.slider("TTS တစ်ပြိုင်နက်", 1, 10, 6)
     ref_up = None
@@ -937,31 +958,72 @@ sub_style = {"alpha": int(0.8 * 255), "color": (255, 255, 255), "bold": 0, "layo
 proxy = secret("EDGE_TTS_PROXY") or None
 hf_token = secret("HF_TOKEN") or None
 
-# ---- Step 1
-section(1, "Video ရွေးပါ")
-up = st.file_uploader(" ", type=["mp4", "mov", "mkv", "webm", "m4v"],
-                      key=f"vid_{st.session_state.get('up_key', 0)}",
-                      label_visibility="collapsed")
 
-if up:
+# ====================================================================
+# STEP 1: Video Input (Upload / Link)
+# ====================================================================
+section(1, "Video ရွေးပါ")
+
+mode = st.radio("Video ရင်းမြစ်", ["📁 Upload", "🔗 Link"], horizontal=True, label_visibility="collapsed")
+vid_path = None
+
+if mode == "📁 Upload":
+    up = st.file_uploader(" ", type=["mp4", "mov", "mkv", "webm", "m4v"],
+                          key=f"vid_{st.session_state.get('up_key', 0)}",
+                          label_visibility="collapsed")
+    if up:
+        vid_path = save_upload(up)
+
+else: # Link Mode
+    url_in = st.text_input("Video link (direct mp4 / Google Drive / Dropbox / YouTube / Facebook / TikTok ...)",
+                           placeholder="https://...", key="link_url", label_visibility="collapsed")
+    
+    if st.button("⬇️ Link ကနေ ဆွဲမယ်", use_container_width=True, disabled=not url_in.strip()):
+        with st.status("⬇️ Video ဆွဲနေတယ်...", expanded=True) as ds:
+            dbar = st.progress(0.0, text="စတင်နေတယ်...")
+            t_dl = time.time()
+            try:
+                p = run_download(url_in, height, secret("YT_COOKIES") or None, dbar)
+                paths = st.session_state.setdefault("up_paths", [])
+                if p not in paths:
+                    paths.append(p)
+                st.session_state["link_path"] = p
+                st.session_state["link_src"] = url_in.strip()
+                ds.update(label=f"✅ ဆွဲပြီး · {os.path.getsize(p)/1e6:.1f} MB · {fmt_t(time.time() - t_dl)}", state="complete")
+            except Exception as ex:
+                st.session_state.pop("link_path", None)
+                st.session_state.pop("link_src", None)
+                ds.update(label="❌ မဆွဲနိုင်ပါ", state="error")
+                st.error(str(ex)[:900])
+                
+    lp = st.session_state.get("link_path")
+    if lp and os.path.exists(lp):
+        vid_path = lp
+        st.caption(f"📎 ဆွဲထားတဲ့ video: {os.path.getsize(lp)/1e6:.1f} MB")
+        if st.session_state.get("link_src") != url_in.strip():
+            st.warning("Link ပြောင်းထားတယ်။ ⬇️ ကို ပြန်နှိပ်မှ video အသစ်ရမယ် (အခုက အရင် link ကိုပဲ သုံးနေတယ်)")
+
+if vid_path:
     try:
-        up_path = save_upload(up)
-        pv = make_preview(up_path, height, "စာတန်းထိုး နမူနာ စာသား", font_path,
+        pv = make_preview(vid_path, height, "စာတန်းထိုး နမူနာ စာသား", font_path,
                           sub_size, sub_pos, use_neon, neon_th, neon_speed, flip, zoom, sub_style)
         if pv is not None:
             st.image(pv, caption="🔍 Preview", use_container_width=True)
     except Exception as ex:
         st.caption(f"preview မရ: {str(ex)[:100]}")
 
-# ---- Step 2
+
+# ====================================================================
+# STEP 2: Transcribe
+# ====================================================================
 section(2, "စာသားထုတ်")
-if st.button("🎧 စာသားထုတ်", type="primary", disabled=not up, use_container_width=True):
+if st.button("🎧 စာသားထုတ်", type="primary", disabled=not vid_path, use_container_width=True):
     reset_job()
     st.session_state.pop("cleaned", None)
     wd = tempfile.mkdtemp(prefix="recap_")
     st.session_state["wd"] = wd
     src = os.path.join(wd, "src.mp4")
-    shutil.copy(save_upload(up), src)
+    shutil.copy(vid_path, src)
 
     try:
         vdur = dur(src)
@@ -1016,7 +1078,10 @@ if st.button("🎧 စာသားထုတ်", type="primary", disabled=not up
     except Exception as ex:
         st.error(f"Error: {ex}")
 
-# ---- Steps 3 & 4
+
+# ====================================================================
+# STEP 3 & 4: Translate & Render
+# ====================================================================
 if st.session_state.get("units"):
     units = st.session_state["units"]
     if st.session_state.get("t1"):
