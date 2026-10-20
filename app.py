@@ -12,6 +12,7 @@ import queue
 import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 import cv2
 import numpy as np
@@ -570,6 +571,8 @@ def cleanup_uploads():
         except Exception:  # noqa: BLE001
             pass
     st.session_state["up_paths"] = []
+    st.session_state.pop("link_path", None)
+    st.session_state.pop("link_src", None)
     st.session_state["up_key"] = st.session_state.get("up_key", 0) + 1
 
 
@@ -598,6 +601,150 @@ def save_upload(up):
 
 
 # ====================================================================
+# Link download (direct / Google Drive / Dropbox / YouTube ... yt-dlp ထောက်ပံ့တဲ့ site အားလုံး)
+# ====================================================================
+VIDEO_EXT = (".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi", ".ts", ".flv")
+
+
+def _fix_dropbox(url):
+    u = urlparse(url)
+    q = parse_qs(u.query)
+    q["dl"] = ["1"]
+    return urlunparse(u._replace(query=urlencode(q, doseq=True)))
+
+
+def _dl_direct(url, out, bar=None):
+    import requests
+    with requests.get(url, stream=True, timeout=30, allow_redirects=True,
+                      headers={"User-Agent": "Mozilla/5.0"}) as r:
+        r.raise_for_status()
+        ctype = r.headers.get("content-type", "").lower()
+        if "text/html" in ctype:
+            raise RuntimeError("Link က video ဖိုင် မဟုတ်ဘဲ web page ဖြစ်နေတယ်")
+        total = int(r.headers.get("content-length") or 0)
+        got = 0
+        with open(out, "wb") as f:
+            for chunk in r.iter_content(1 << 20):
+                f.write(chunk)
+                got += len(chunk)
+                if bar is not None and total:
+                    bar.progress(min(got / total, 1.0))
+    if not os.path.exists(out) or os.path.getsize(out) < 1024:
+        raise RuntimeError("ဖိုင် မရပါ")
+    return out
+
+
+def _dl_gdrive(url, out):
+    import gdown
+    gdown.download(url, out, quiet=True, fuzzy=True)
+    if not os.path.exists(out) or os.path.getsize(out) < 1024:
+        raise RuntimeError("Google Drive ဖိုင် မရပါ (Share ကို 'Anyone with the link' ထားပါ)")
+    return out
+
+
+def _dl_ytdlp(url, out_noext, height, bar=None, cookies_text=None):
+    import yt_dlp
+
+    def hook(d):
+        if bar is not None and d.get("status") == "downloading":
+            tot = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+            if tot:
+                bar.progress(min(d.get("downloaded_bytes", 0) / tot, 1.0))
+
+    opts = {
+        "format": f"bv*[height<={height}]+ba/b[height<={height}]/bv*+ba/b",
+        "outtmpl": out_noext + ".%(ext)s",
+        "merge_output_format": "mp4",
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "retries": 5,
+        "fragment_retries": 5,
+        "concurrent_fragment_downloads": 4,
+        "progress_hooks": [hook],
+    }
+    if cookies_text:
+        cf = out_noext + "_cookies.txt"
+        with open(cf, "w") as f:
+            f.write(cookies_text)
+        opts["cookiefile"] = cf
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        ydl.download([url])
+    files = [p for p in glob.glob(out_noext + ".*")
+             if not p.endswith((".part", ".ytdl", "_cookies.txt"))]
+    if not files:
+        raise RuntimeError("yt-dlp ဖိုင် မထွက်ပါ")
+    return max(files, key=os.path.getsize)
+
+
+def _ensure_mp4(raw, final, height):
+    """h264 mp4 ဖြစ်အောင် လုပ် (cv2 ဖတ်နိုင်ဖို့)။ h264 ဆိုရင် copy၊ မဟုတ်ရင် re-encode"""
+    try:
+        codec = sh(["ffprobe", "-v", "error", "-select_streams", "v:0",
+                    "-show_entries", "stream=codec_name", "-of", "csv=p=0", raw]).strip()
+    except Exception:  # noqa: BLE001
+        codec = ""
+    if not codec:
+        raise RuntimeError("Video stream မတွေ့ပါ (ဖိုင်က video မဟုတ်နိုင်)")
+    if codec == "h264":
+        try:
+            sh(["ffmpeg", "-y", "-i", raw, "-c", "copy", "-movflags", "+faststart", final])
+            return final
+        except Exception:  # noqa: BLE001
+            pass
+    sh(["ffmpeg", "-y", "-i", raw, "-vf", f"scale=-2:'min(ih,{int(height)})'",
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "26", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", final])
+    return final
+
+
+def fetch_link(url, height, bar=None, cookies_text=None):
+    url = url.strip()
+    if not re.match(r"^https?://", url, re.I):
+        raise ValueError("Link က http:// ဒါမှမဟုတ် https:// နဲ့ စရမယ်")
+    key = hashlib.md5(url.encode()).hexdigest()[:12]
+    final = f"/tmp/recap_up_{key}.mp4"
+    if os.path.exists(final) and os.path.getsize(final) > 1024:
+        return final
+    work = tempfile.mkdtemp(prefix="dl_")
+    try:
+        u = urlparse(url)
+        host, path_l = u.netloc.lower(), u.path.lower()
+        raw, errs = None, []
+        if "drive.google.com" in host or "docs.google.com" in host:
+            raw = os.path.join(work, "gd.bin")
+            _dl_gdrive(url, raw)
+        else:
+            if "dropbox.com" in host:
+                url = _fix_dropbox(url)
+                methods = ["direct", "ytdlp"]
+            elif path_l.endswith(VIDEO_EXT):
+                methods = ["direct", "ytdlp"]
+            else:
+                methods = ["ytdlp", "direct"]
+            for m in methods:
+                try:
+                    if bar is not None:
+                        bar.progress(0.0)
+                    if m == "direct":
+                        raw = _dl_direct(url, os.path.join(work, "direct.bin"), bar)
+                    else:
+                        raw = _dl_ytdlp(url, os.path.join(work, "yt"), height, bar, cookies_text)
+                    break
+                except Exception as ex:  # noqa: BLE001
+                    errs.append(f"{m}: {str(ex)[:200]}")
+                    raw = None
+            if not raw:
+                raise RuntimeError("Link ကနေ မဆွဲနိုင်ပါ\n" + "\n".join(errs))
+        if bar is not None:
+            bar.progress(1.0)
+        _ensure_mp4(raw, final, height)
+        return final
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+# ====================================================================
 # UI
 # ====================================================================
 st.title("🎙️ Recap → Myanmar")
@@ -611,7 +758,7 @@ with st.expander("⚙️ Settings", expanded=False):
     c3, c4 = st.columns(2)
     height = c3.select_slider("Output height", [360, 480, 720, 1080], value=720)
     max_speed = c4.slider("ရုပ် အမြန်ဆုံး ဆ", 1.0, 2.0, 1.25, 0.05)
-    max_min = st.slider("Video အရှည် ကန့်သတ် (မိနစ်)", 1, 15, 6)
+    max_min = st.slider("Video အရှည် ကန့်သတ် (မိနစ်)", 1, 120, 15)
     preset = st.selectbox("Render speed", ["ultrafast", "superfast", "veryfast"], index=0,
                           help="ultrafast = အမြန်ဆုံး (file အနည်းငယ်ကြီး)၊ veryfast = file သေး/နှေးနည်းနည်း")
 
@@ -670,13 +817,44 @@ sub_style = {
 proxy = secret("EDGE_TTS_PROXY") or None
 hf_token = secret("HF_TOKEN") or None
 
-up = st.file_uploader("Video ရွေးပါ", type=["mp4", "mov", "mkv", "webm", "m4v"],
-                      key=f"vid_{st.session_state.get('up_key', 0)}")
+mode = st.radio("Video ရင်းမြစ်", ["🔗 Link", "📁 Upload"], horizontal=True)
+vid_path = None
+if mode.startswith("🔗"):
+    url_in = st.text_input("Video link (direct mp4 / Google Drive / Dropbox / YouTube / Facebook / TikTok ...)",
+                           placeholder="https://...", key="link_url")
+    if st.button("⬇️ Link ကနေ ဆွဲမယ်", use_container_width=True, disabled=not url_in.strip()):
+        with st.status("⬇️ Video ဆွဲနေတယ်...", expanded=True) as ds:
+            dbar = st.progress(0.0)
+            t_dl = time.time()
+            try:
+                p = fetch_link(url_in, height, dbar, secret("YT_COOKIES") or None)
+                paths = st.session_state.setdefault("up_paths", [])
+                if p not in paths:
+                    paths.append(p)
+                st.session_state["link_path"] = p
+                st.session_state["link_src"] = url_in.strip()
+                ds.update(label=f"✅ ဆွဲပြီး · {os.path.getsize(p)/1e6:.1f} MB · {fmt_t(time.time() - t_dl)}",
+                          state="complete")
+            except Exception as ex:  # noqa: BLE001
+                st.session_state.pop("link_path", None)
+                st.session_state.pop("link_src", None)
+                ds.update(label="❌ မဆွဲနိုင်ပါ", state="error")
+                st.error(str(ex)[:900])
+    lp = st.session_state.get("link_path")
+    if lp and os.path.exists(lp):
+        vid_path = lp
+        st.caption(f"📎 ဆွဲထားတဲ့ video: {os.path.getsize(lp)/1e6:.1f} MB")
+        if st.session_state.get("link_src") != url_in.strip():
+            st.warning("Link ပြောင်းထားတယ်။ ⬇️ ကို ပြန်နှိပ်မှ video အသစ်ရမယ် (အခုက အရင် link ကိုပဲ သုံးနေတယ်)")
+else:
+    up = st.file_uploader("Video ရွေးပါ", type=["mp4", "mov", "mkv", "webm", "m4v"],
+                          key=f"vid_{st.session_state.get('up_key', 0)}")
+    if up:
+        vid_path = save_upload(up)
 
-if up:
+if vid_path:
     try:
-        up_path = save_upload(up)
-        pv = make_preview(up_path, height, "စာတန်းထိုး နမူနာ စာသား ဖြစ်ပါတယ်။", font_path,
+        pv = make_preview(vid_path, height, "စာတန်းထိုး နမူနာ စာသား ဖြစ်ပါတယ်။", font_path,
                           sub_size, sub_pos, use_neon, neon_th, neon_speed, flip, zoom, sub_style)
         if pv is not None:
             st.image(pv, caption="Preview", use_container_width=True)
@@ -686,13 +864,13 @@ if up:
 # ====================================================================
 # Stage 1 : Whisper + Gemini
 # ====================================================================
-if st.button("1️⃣ စာသားထုတ်", type="primary", disabled=not up, use_container_width=True):
+if st.button("1️⃣ စာသားထုတ်", type="primary", disabled=not vid_path, use_container_width=True):
     reset_job()
     st.session_state.pop("cleaned", None)
     wd = tempfile.mkdtemp(prefix="recap_")
     st.session_state["wd"] = wd
     src = os.path.join(wd, "src.mp4")
-    shutil.copy(save_upload(up), src)
+    shutil.copy(vid_path, src)
 
     try:
         vdur = dur(src)
