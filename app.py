@@ -554,7 +554,7 @@ def make_preview(path, height, text, font_path, fs_pct, pos_y, neon_on, neon_th,
 
 
 # ====================================================================
-# Prompt builder (Dubbing / Recap)
+# Prompt builder (Dubbing / Recap)  ← UPDATED
 # ====================================================================
 def build_prompt(units, mode="dub"):
     if mode == "dub":
@@ -573,12 +573,13 @@ def build_prompt(units, mode="dub"):
         f"[{i}] ({u['end'] - u['start']:.1f}s) {u['src']}" for i, u in enumerate(units)
     )
     return (
-        "You are a professional Burmese (Myanmar) recap-video storyteller. Below is the transcript "
+        f"You are a professional Burmese (Myanmar) recap-video storyteller. Below is the transcript "
         f"of a video, split into {n} numbered segments (each with its duration in seconds). "
         "First read the WHOLE transcript to understand the full story. Then retell it as an "
         "engaging Burmese recap narration, NOT a word-for-word translation.\n\n"
         "Rules:\n"
         "- Write natural spoken Burmese, storyteller tone, simple everyday words, easy to hear.\n"
+        "- Open segment [0] with a short hook that grabs attention.\n"
         "- You may rephrase, tighten and add smooth transitions, but keep every key fact, "
         "event and name. Do not invent facts.\n"
         "- Keep character/place/product names consistent across all lines.\n"
@@ -957,7 +958,6 @@ src_lang = "auto"
 wsize = "base"
 height = 720
 max_speed = 1.25
-max_min = 6
 preset = "ultrafast"
 
 # ---- Settings expander (only TTS + Subtitle + Neon)
@@ -1067,9 +1067,6 @@ if st.button("🎧 စာသားထုတ်", type="primary", disabled=not vi
 
     try:
         vdur = dur(src)
-        if vdur > max_min * 60:
-            st.error(f"Video က {vdur/60:.1f} မိနစ် · ကန့်သတ် {max_min} မိနစ်")
-            st.stop()
         st.session_state["vdur"] = vdur
 
         T1 = {}
