@@ -192,10 +192,17 @@ def load_whisper(size):
 
 
 # ====================================================================
-# Gemini API Translation
+# Gemini API Translation (ပုံထဲက Model အသစ်များကို သုံးထားသည်)
 # ====================================================================
 def translate_with_gemini(api_key, prompt_text, retries=3):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+    models = [
+        "gemini-3.5-flash", 
+        "gemini-3.5-flash-lite", 
+        "gemini-3.6-flash", 
+        "gemini-3.7-flash", 
+        "gemini-1.5-flash" 
+    ]
+    
     headers = {'Content-Type': 'application/json'}
     payload = {
         "contents": [{
@@ -203,22 +210,28 @@ def translate_with_gemini(api_key, prompt_text, retries=3):
         }]
     }
     
-    for attempt in range(retries):
-        try:
-            response = requests.post(url, headers=headers, json=payload, timeout=60)
-            response.raise_for_status()
-            data = response.json()
-            return data['candidates'][0]['content']['parts'][0]['text']
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 429: 
-                time.sleep(10 * (attempt + 1))
-                continue
-            raise Exception(f"API Error: {e.response.text}")
-        except Exception as e:
-            if attempt == retries - 1:
-                raise e
-            time.sleep(3)
-    return None
+    last_error = ""
+    for model in models:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+        for attempt in range(retries):
+            try:
+                response = requests.post(url, headers=headers, json=payload, timeout=60)
+                response.raise_for_status()
+                data = response.json()
+                return data['candidates'][0]['content']['parts'][0]['text']
+            except requests.exceptions.HTTPError as e:
+                last_error = f"{model} Error: {e.response.status_code}"
+                if e.response.status_code == 429: 
+                    time.sleep(10 * (attempt + 1))
+                    continue
+                break 
+            except Exception as e:
+                last_error = str(e)
+                if attempt == retries - 1:
+                    break
+                time.sleep(3)
+                
+    raise Exception(f"API အလုပ်မလုပ်ပါ (Key သို့မဟုတ် Model ပြဿနာ): {last_error}")
 
 
 # ====================================================================
@@ -983,10 +996,9 @@ st.markdown(
 with st.expander("⚙️ Settings", expanded=False):
     c1, c2 = st.columns(2)
     src_lang = c1.selectbox("မူရင်းဘာသာ", ["auto", "en", "zh", "ko", "ja", "hi", "th", "vi", "id"])
-    ratio = c2.radio("Ratio", ["16:9", "9:16"], index=1, horizontal=True) # 9:16 ကို Default ထားသည်
+    ratio = c2.radio("Ratio", ["16:9", "9:16"], index=1, horizontal=True) 
     c3, c4 = st.columns(2)
-    # Quality slider ဖျောက်ထားပြီး 720 ကို ပုံသေထားသည်
-    height = 720 
+    height = 720 # Quality ကို ပုံသေ 720 ထားသည်
     max_speed = c3.slider("အမြန်ဆုံး ဆ", 1.0, 2.0, 1.25, 0.05)
     fit_mode = c4.radio("Frame", ["Crop (အပြည့်)", "Fit (အနားကွက်)"], horizontal=True)
     preset = st.selectbox("Render speed", ["ultrafast", "superfast", "veryfast"], index=0)
@@ -1005,7 +1017,6 @@ with st.expander("🔊 အသံ (Voice)", expanded=False):
 with st.expander("🌐 ဘာသာပြန် (Translation)", expanded=True):
     trans_mode = st.radio("ဘာသာပြန်နည်းလမ်း", ["Auto (Gemini API)", "Manual (Copy/Paste)"], horizontal=True)
     if trans_mode == "Auto (Gemini API)":
-        # Session state မှာ key ရှိပြီးသားဆိုရင် ပြန်မတောင်းတော့ဘူး
         if "gemini_api_key" not in st.session_state:
             st.session_state["gemini_api_key"] = secret("GOOGLE_API_KEY")
         
@@ -1026,7 +1037,6 @@ with st.expander("🎨 စာတန်း + Neon", expanded=False):
     
     use_neon = st.toggle("Neon border", value=True)
     c7, c8 = st.columns(2)
-    # Neon Slider အသစ်များ
     neon_th = c7.slider("Neon အထူ", 2, 30, 10, 1)
     neon_speed = c8.slider("Neon အလျင်အမြန်", 0.1, 2.0, 0.4, 0.1)
     
@@ -1175,7 +1185,6 @@ if st.session_state.get("units"):
     if len(parts) > 1:
         st.info(f"Video ရှည်လို့ {len(parts)} ပိုင်း ခွဲထားတယ် (တစ်ပိုင်း ~5 မိနစ်)")
         
-    # Auto Translate Logic
     if trans_mode == "Auto (Gemini API)":
         if st.button("🌐 Auto Translate (API) အားလုံးကို ဘာသာပြန်မယ်", type="primary", use_container_width=True):
             if not api_key_in:
@@ -1187,21 +1196,19 @@ if st.session_state.get("units"):
                         sub = units[a:b]
                         prompt = build_prompt(sub)
                         try:
-                            # တစ်ခါတည်း အပြတ်ခေါ်မယ်
                             res_text = translate_with_gemini(api_key_in, prompt)
                             if res_text:
                                 got = parse_numbered(res_text, len(sub))
                                 for i, t in got.items():
                                     units[a + i]["my"] = clean_my(t)
                             bar.progress((k + 1) / len(parts))
-                            time.sleep(2) # API ကို အလွန်အကျွံ မခေါ်မိစေဖို့ ၂ စက္ကန့် ခံပေးထားတယ်
+                            time.sleep(2) 
                         except Exception as e:
                             st.error(f"Part {k+1} API Error: {e}")
                             break
                     api_stat.update(label="✅ API ဘာသာပြန် ပြီးပါပြီ", state="complete")
                     st.rerun()
 
-    # Manual / Result check
     for k, (a, b) in enumerate(parts):
         sub = units[a:b]
         all_translated = all(u["my"] for u in sub)
