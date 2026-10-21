@@ -552,9 +552,46 @@ def make_preview(path, height, text, font_path, fs_pct, pos_y, neon_on, neon_th,
             blend_overlay(fr, ov)
     return cv2.cvtColor(fr, cv2.COLOR_BGR2RGB)
 
-def build_prompt(units):
-    lines = "\n".join(f"[{i}] {u['src']}" for i, u in enumerate(units))
-    return ("You are a Burmese (Myanmar) recap-video narrator. Translate every numbered line below into natural spoken Burmese narration (storyteller style). Rules: do NOT summarize, shorten or skip; do NOT move content between lines; keep character names consistent across all lines; use ONLY Burmese script (Myanmar Unicode), no English/Chinese letters. Output exactly one line per input line in the format [number] Burmese text -- same numbers, no extra comments.\n\n" + lines)
+
+# ====================================================================
+# Prompt builder (Dubbing / Recap)
+# ====================================================================
+def build_prompt(units, mode="dub"):
+    if mode == "dub":
+        lines = "\n".join(f"[{i}] {u['src']}" for i, u in enumerate(units))
+        return (
+            "You are a Burmese (Myanmar) recap-video narrator. Translate every numbered line below "
+            "into natural spoken Burmese narration (storyteller style). Rules: do NOT summarize, "
+            "shorten or skip; do NOT move content between lines; keep character names consistent "
+            "across all lines; use ONLY Burmese script (Myanmar Unicode), no English/Chinese "
+            "letters. Output exactly one line per input line in the format [number] Burmese text "
+            "-- same numbers, no extra comments.\n\n" + lines
+        )
+
+    n = len(units)
+    lines = "\n".join(
+        f"[{i}] ({u['end'] - u['start']:.1f}s) {u['src']}" for i, u in enumerate(units)
+    )
+    return (
+        "You are a professional Burmese (Myanmar) recap-video storyteller. Below is the transcript "
+        f"of a video, split into {n} numbered segments (each with its duration in seconds). "
+        "First read the WHOLE transcript to understand the full story. Then retell it as an "
+        "engaging Burmese recap narration, NOT a word-for-word translation.\n\n"
+        "Rules:\n"
+        "- Write natural spoken Burmese, storyteller tone, simple everyday words, easy to hear.\n"
+        "- Open segment [0] with a short hook that grabs attention.\n"
+        "- You may rephrase, tighten and add smooth transitions, but keep every key fact, "
+        "event and name. Do not invent facts.\n"
+        "- Keep character/place/product names consistent across all lines.\n"
+        "- Each line must match the scene of its own segment (do not move content to other "
+        "segments), and its spoken length should fit the segment duration "
+        "(about 3-4 Burmese syllables per second).\n"
+        "- End the last segment with a short closing sentence.\n"
+        "- Use ONLY Burmese script (Myanmar Unicode). No English/Chinese letters. Numbers as digits are OK.\n"
+        f"- Output EXACTLY {n} lines, one per segment, in the format: [number] Burmese text\n"
+        "- Same numbers, no extra comments, no headings, no blank lines.\n\n"
+        + lines
+    )
 
 def parse_numbered(text, n):
     got = {}
@@ -978,10 +1015,10 @@ if mode == "📁 Upload":
     if up:
         vid_path = save_upload(up)
 
-else: # Link Mode
+else:  # Link Mode
     url_in = st.text_input("Video link (direct mp4 / Google Drive / Dropbox / YouTube / Facebook / TikTok ...)",
                            placeholder="https://...", key="link_url", label_visibility="collapsed")
-    
+
     if st.button("⬇️ Link ကနေ ဆွဲမယ်", use_container_width=True, disabled=not url_in.strip()):
         with st.status("⬇️ Video ဆွဲနေတယ်...", expanded=True) as ds:
             dbar = st.progress(0.0, text="စတင်နေတယ်...")
@@ -999,7 +1036,7 @@ else: # Link Mode
                 st.session_state.pop("link_src", None)
                 ds.update(label="❌ မဆွဲနိုင်ပါ", state="error")
                 st.error(str(ex)[:900])
-                
+
     lp = st.session_state.get("link_path")
     if lp and os.path.exists(lp):
         vid_path = lp
@@ -1094,7 +1131,12 @@ if st.session_state.get("units"):
     section(3, "ဘာသာပြန် (Gemini)")
     if st.session_state.get("manual"):
         st.caption("① အောက်က စာသား Copy → ② Gemini app မှာ paste → ③ ရလဒ် အောက်ကွက်ထဲ paste → ④ Apply")
-        st.code(build_prompt(units), language=None)
+        pmode = st.radio(
+            "Prompt အမျိုးအစား",
+            ["🎙️ Dubbing (စာကြောင်းလိုက် ဘာသာပြန်)", "📝 Recap (ဇာတ်လမ်းပြန်ပြော)"],
+            horizontal=True, key="pmode",
+        )
+        st.code(build_prompt(units, "dub" if pmode.startswith("🎙️") else "recap"), language=None)
         pasted = st.text_area("📥 Gemini ရလဒ်", height=160, key="gem_paste",
                               placeholder="[0] မြန်မာစာ...\n[1] မြန်မာစာ...",
                               label_visibility="collapsed")
