@@ -554,9 +554,11 @@ def make_preview(path, height, text, font_path, fs_pct, pos_y, neon_on, neon_th,
 
 
 # ====================================================================
-# Prompt builder (Dubbing / Recap)  ← RECAP FIXED
+# Prompt builder (Dubbing / Recap 2-Steps) ← UPDATED
 # ====================================================================
-def build_prompt(units, mode="dub"):
+def build_prompt(units, mode="dub", step=1, recap_text=""):
+    n = len(units)
+    
     if mode == "dub":
         lines = "\n".join(f"[{i}] {u['src']}" for i, u in enumerate(units))
         return (
@@ -568,47 +570,42 @@ def build_prompt(units, mode="dub"):
             "-- same numbers, no extra comments.\n\n" + lines
         )
 
-    n = len(units)
     lines = "\n".join(
         f"[{i}] ({u['end'] - u['start']:.1f}s) {u['src']}" for i, u in enumerate(units)
     )
-    return (
-        f"You are a professional Burmese (Myanmar) recap-video storyteller.\n\n"
-        f"The transcript below is split into {n} numbered segments "
-        f"(each with its duration in seconds).\n\n"
-        "=== STEP 1: UNDERSTAND THE STORY ===\n"
-        "First read the WHOLE transcript from start to finish to understand "
-        "the full story, characters, and events. Do NOT translate yet.\n\n"
-        "=== STEP 2: RETELL AS RECAP ===\n"
-        "Then retell the story as an engaging Burmese (Myanmar) recap narration. "
-        "This is NOT a word-for-word translation — it is a storyteller retelling "
-        "of the same story, in natural spoken Burmese, easy to hear.\n\n"
-        "=== STEP 3: FIT INTO SEGMENTS ===\n"
-        f"Now write the recap as EXACTLY {n} numbered lines — one line per segment. "
-        "Distribute the recap content across the segments so that:\n"
-        "- Each line covers the scene of ITS OWN segment (do not move a scene to another segment).\n"
-        "- The key facts of each segment appear in that segment's line.\n"
-        "- Each line's spoken length fits its segment duration "
-        "(target 3.5 Burmese syllables per second; allowed = duration × 3.5 ±15%).\n"
-        "- If a segment is short, compress the wording — never drop key facts.\n"
-        "- If a segment is long, expand naturally with storyteller detail — never invent facts.\n\n"
-        "=== STYLE RULES ===\n"
-        "- Natural spoken Burmese, storyteller tone, simple everyday words.\n"
-        "- Segment [0] opens with a short attention hook.\n"
-        "- The last segment ends with a brief closing sentence.\n"
-        "- Keep character / place / product names consistent across all lines.\n"
-        "- Do not invent facts. Keep every key event and name.\n"
-        "- Use smooth transitions between lines (e.g. ပြီးတော့, ဒါပေမယ့်, ထို့နောက်).\n\n"
-        "=== OUTPUT FORMAT ===\n"
-        "- Use ONLY Burmese script (Myanmar Unicode). No English/Chinese letters.\n"
-        "  Western names may be transliterated into Burmese syllables only.\n"
-        "  Arabic digits 0–9 are allowed. Burmese punctuation ။ ၊ is allowed.\n"
-        f"- Output EXACTLY {n} lines, one per segment, sequential numbers 0..{n-1}.\n"
-        "- Format each line as: [number] Burmese text\n"
-        "- Same numbers, no extra comments, no headings, no blank lines, no markdown.\n\n"
-        "--- TRANSCRIPT (with segment durations) ---\n"
-        + lines
-    )
+
+    # Recap Step 1: Write a Story Summary
+    if step == 1:
+        return (
+            "You are a professional Burmese (Myanmar) storyteller.\n"
+            "Read the transcript below and write a single, engaging Burmese recap narration.\n\n"
+            "Rules:\n"
+            "- Write natural spoken Burmese, storyteller tone, easy to listen to.\n"
+            "- Summarize the story: keep the main plot, key events, and character names.\n"
+            "- DO NOT write line-by-line translations. This is a story summary, not a translation.\n"
+            "- You may rephrase, tighten, and add smooth transitions.\n"
+            "- Use ONLY Burmese script (Myanmar Unicode). Numbers as digits are OK.\n"
+            "- Output only the recap text. No headings, no line numbers, no extra comments.\n\n"
+            "--- TRANSCRIPT ---\n" + lines
+        )
+
+    # Recap Step 2: Split into Segments
+    if step == 2:
+        return (
+            f"You are a professional subtitle aligner. I have a Burmese recap story below, "
+            f"and I need to split it into exactly {n} segments for a video.\n\n"
+            f"Here are the {n} segments with their durations:\n"
+            + "\n".join(f"[{i}] {u['end'] - u['start']:.1f}s" for i, u in enumerate(units)) + "\n\n"
+            "Rules:\n"
+            f"- Split the recap text into EXACTLY {n} lines.\n"
+            "- Each line must match the timeline and spoken length of its segment.\n"
+            "- Target 3.5 Burmese syllables per second. Allowed length = duration × 3.5 (±15%).\n"
+            "- Keep the lines in order. No skipping, no merging.\n"
+            "- Output format: [number] Burmese text. (e.g., [0] စာသား)\n"
+            "- No extra comments, no headings, no blank lines.\n\n"
+            "--- RECAP TEXT ---\n" + recap_text
+        )
+    return ""
 
 def parse_numbered(text, n):
     got = {}
@@ -1141,28 +1138,59 @@ if st.session_state.get("units"):
     if st.session_state.get("t1"):
         st.caption("⏱️ " + " · ".join(f"{k} {fmt_t(v)}" for k, v in st.session_state["t1"].items()))
 
-    section(3, "ဘာသာပြန် (Gemini)")
+    section(3, "ဘာသာပြန် / ဇာတ်လမ်းပြန် (Gemini)")
     if st.session_state.get("manual"):
-        st.caption("① အောက်က စာသား Copy → ② Gemini app မှာ paste → ③ ရလဒ် အောက်ကွက်ထဲ paste → ④ Apply")
         pmode = st.radio(
             "Prompt အမျိုးအစား",
             ["🎙️ Dubbing (စာကြောင်းလိုက် ဘာသာပြန်)", "📝 Recap (ဇာတ်လမ်းပြန်ပြော)"],
             horizontal=True, key="pmode",
         )
-        st.code(build_prompt(units, "dub" if pmode.startswith("🎙️") else "recap"), language=None)
-        pasted = st.text_area("📥 Gemini ရလဒ်", height=160, key="gem_paste",
-                              placeholder="[0] မြန်မာစာ...\n[1] မြန်မာစာ...",
-                              label_visibility="collapsed")
+        
+        is_recap = pmode.startswith("📝")
+        
+        if is_recap:
+            st.caption("💡 **Recap လုပ်နည်း (အဆင့် ၂ ဆင့်)**:")
+            
+            # ------ Recap Step 1 ------
+            st.markdown("**(၁) ဇာတ်လမ်းအကျဉ်းချုပ် ရေးခိုင်းရန် Prompt**")
+            p1 = build_prompt(units, "recap", step=1)
+            st.code(p1, language=None)
+            
+            st.markdown("**(၂) Gemini ရလဒ် (ဇာတ်လမ်းအကျဉ်းချုပ်) ကို ဒီမှာ Paste လုပ်ပါ**")
+            recap_text = st.text_area("Recap Text", height=120, key="recap_text", label_visibility="collapsed")
+            
+            if recap_text.strip():
+                st.markdown("**(၃) စာကြောင်းခွဲဖို့ (Sync အတွက်) Prompt**")
+                p2 = build_prompt(units, "recap", step=2, recap_text=recap_text)
+                st.code(p2, language=None)
+                
+                st.markdown("**(၄) Gemini ရလဒ် (စာကြောင်းခွဲပြီး) ကို ဒီမှာ Paste လုပ်ပါ**")
+                pasted = st.text_area("Gemini Output", height=160, key="gem_paste", placeholder="[0] မြန်မာစာ...\n[1] မြန်မာစာ...", label_visibility="collapsed")
+            else:
+                pasted = ""
+                st.info("အပေါ်က (၂) မှာ ဇာတ်လမ်းအကျဉ်းချုပ်ကို အရင် Paste လုပ်ပါ။")
+                
+        else:
+            st.caption("① အောက်က စာသား Copy → ② Gemini app မှာ paste → ③ ရလဒ် အောက်ကွက်ထဲ paste → ④ Apply")
+            p1 = build_prompt(units, "dub")
+            st.code(p1, language=None)
+            pasted = st.text_area("📥 Gemini ရလဒ်", height=160, key="gem_paste",
+                                  placeholder="[0] မြန်မာစာ...\n[1] မြန်မာစာ...",
+                                  label_visibility="collapsed")
+
         if st.button("✅ Apply", use_container_width=True):
-            got = parse_numbered(pasted, len(units))
-            for i, t in got.items():
-                units[i]["my"] = clean_my(t)
-            missing = [i for i in range(len(units)) if not units[i]["my"]]
-            st.session_state["apply_msg"] = (
-                f"ဖြည့်ပြီး {len(got)}/{len(units)}"
-                + (f" · မပါ: {missing[:15]}" if missing else " ✅"))
-            st.session_state["ver"] = st.session_state.get("ver", 0) + 1
-            st.rerun()
+            if not pasted.strip():
+                st.warning("Gemini ရလဒ် ကို အရင် Paste လုပ်ပါ။")
+            else:
+                got = parse_numbered(pasted, len(units))
+                for i, t in got.items():
+                    units[i]["my"] = clean_my(t)
+                missing = [i for i in range(len(units)) if not units[i]["my"]]
+                st.session_state["apply_msg"] = (
+                    f"ဖြည့်ပြီး {len(got)}/{len(units)}"
+                    + (f" · မပါ: {missing[:15]}" if missing else " ✅"))
+                st.session_state["ver"] = st.session_state.get("ver", 0) + 1
+                st.rerun()
         if st.session_state.get("apply_msg"):
             st.info(st.session_state["apply_msg"])
 
