@@ -554,58 +554,58 @@ def make_preview(path, height, text, font_path, fs_pct, pos_y, neon_on, neon_th,
 
 
 # ====================================================================
-# Prompt builder (Dubbing / Recap 2-Steps) ← UPDATED
+# Prompt builder (Dubbing / Recap)
 # ====================================================================
-def build_prompt(units, mode="dub", step=1, recap_text=""):
-    n = len(units)
-    
+def build_prompt(units, mode="dub"):
     if mode == "dub":
         lines = "\n".join(f"[{i}] {u['src']}" for i, u in enumerate(units))
         return (
-            "You are a Burmese (Myanmar) recap-video narrator. Translate every numbered line below "
-            "into natural spoken Burmese narration (storyteller style). Rules: do NOT summarize, "
+            "=== TASK: LITERAL DUBBING TRANSLATION ===\n"
+            "You are a Burmese (Myanmar) dubbing translator. Translate every numbered line below "
+            "into natural spoken Burmese. Rules: do NOT summarize, "
             "shorten or skip; do NOT move content between lines; keep character names consistent "
             "across all lines; use ONLY Burmese script (Myanmar Unicode), no English/Chinese "
             "letters. Output exactly one line per input line in the format [number] Burmese text "
             "-- same numbers, no extra comments.\n\n" + lines
         )
 
+    n = len(units)
+    total = sum(u["end"] - u["start"] for u in units)
     lines = "\n".join(
         f"[{i}] ({u['end'] - u['start']:.1f}s) {u['src']}" for i, u in enumerate(units)
     )
-
-    # Recap Step 1: Write a Story Summary
-    if step == 1:
-        return (
-            "You are a professional Burmese (Myanmar) storyteller.\n"
-            "Read the transcript below and write a single, engaging Burmese recap narration.\n\n"
-            "Rules:\n"
-            "- Write natural spoken Burmese, storyteller tone, easy to listen to.\n"
-            "- Summarize the story: keep the main plot, key events, and character names.\n"
-            "- DO NOT write line-by-line translations. This is a story summary, not a translation.\n"
-            "- You may rephrase, tighten, and add smooth transitions.\n"
-            "- Use ONLY Burmese script (Myanmar Unicode). Numbers as digits are OK.\n"
-            "- Output only the recap text. No headings, no line numbers, no extra comments.\n\n"
-            "--- TRANSCRIPT ---\n" + lines
-        )
-
-    # Recap Step 2: Split into Segments
-    if step == 2:
-        return (
-            f"You are a professional subtitle aligner. I have a Burmese recap story below, "
-            f"and I need to split it into exactly {n} segments for a video.\n\n"
-            f"Here are the {n} segments with their durations:\n"
-            + "\n".join(f"[{i}] {u['end'] - u['start']:.1f}s" for i, u in enumerate(units)) + "\n\n"
-            "Rules:\n"
-            f"- Split the recap text into EXACTLY {n} lines.\n"
-            "- Each line must match the timeline and spoken length of its segment.\n"
-            "- Target 3.5 Burmese syllables per second. Allowed length = duration × 3.5 (±15%).\n"
-            "- Keep the lines in order. No skipping, no merging.\n"
-            "- Output format: [number] Burmese text. (e.g., [0] စာသား)\n"
-            "- No extra comments, no headings, no blank lines.\n\n"
-            "--- RECAP TEXT ---\n" + recap_text
-        )
-    return ""
+    return (
+        "=== TASK: RECAP STORYTELLING (NOT TRANSLATION) ===\n"
+        "Ignore any earlier messages in this chat. This is a NEW, separate task.\n\n"
+        "You are a professional Burmese (Myanmar) recap-video storyteller, like a YouTube movie-recap "
+        f"narrator. Below is the raw transcript of a video ({total:.0f} seconds), split into {n} numbered "
+        "segments with their durations.\n\n"
+        "STEP 1 - UNDERSTAND: Read the WHOLE transcript first. Work out who the characters are, "
+        "what happens, and how the story flows from start to end.\n\n"
+        "STEP 2 - RETELL: Retell the whole story as ONE continuous, engaging Burmese narration, "
+        "as if you are telling a friend what happened. This is NOT a translation. "
+        "Do NOT translate line by line and do NOT copy the sentence structure of the transcript.\n\n"
+        "STEP 3 - FIT INTO SEGMENTS: Cut your finished narration into exactly "
+        f"{n} parts, one per segment, so that each part matches the scene of its own segment.\n\n"
+        "Rules:\n"
+        "- Storyteller tone: vivid, dramatic, simple everyday spoken Burmese, easy to hear.\n"
+        "- Connect the lines with natural transitions "
+        "(ဒါကြောင့်၊ ထိုအချိန်မှာ၊ နောက်တော့၊ ဒီလိုနဲ့၊ နောက်ဆုံးမှာ) so they read as one flowing story.\n"
+        "- Describe what is happening and the emotion behind it, not just what was said. "
+        "Turn dialogue into narration (e.g. he asked her..., she refused...).\n"
+        "- You may merge, tighten and rephrase, but keep every key fact, event and name. "
+        "Do not invent facts.\n"
+        "- Keep character/place/product names consistent across all lines.\n"
+        "- Each line's spoken length must fit its segment duration "
+        "(about 3-4 Burmese syllables per second). Do not leave any line empty.\n"
+        "- Start with a short hook in the first segment and end the last segment with a short closing sentence.\n"
+        "- A literal, line-by-line dubbing style translation is WRONG for this task.\n"
+        "- Use ONLY Burmese script (Myanmar Unicode). No English/Chinese letters. Numbers as digits are OK.\n"
+        f"- Output EXACTLY {n} lines, one per segment, in the format: [number] Burmese text\n"
+        "- Same numbers, no extra comments, no headings, no blank lines.\n\n"
+        "=== TRANSCRIPT ===\n"
+        + lines
+    )
 
 def parse_numbered(text, n):
     got = {}
@@ -972,6 +972,7 @@ src_lang = "auto"
 wsize = "base"
 height = 720
 max_speed = 1.25
+max_min = 6
 preset = "ultrafast"
 
 # ---- Settings expander (only TTS + Subtitle + Neon)
@@ -1081,6 +1082,9 @@ if st.button("🎧 စာသားထုတ်", type="primary", disabled=not vi
 
     try:
         vdur = dur(src)
+        if vdur > max_min * 60:
+            st.error(f"Video က {vdur/60:.1f} မိနစ် · ကန့်သတ် {max_min} မိနစ်")
+            st.stop()
         st.session_state["vdur"] = vdur
 
         T1 = {}
@@ -1138,59 +1142,29 @@ if st.session_state.get("units"):
     if st.session_state.get("t1"):
         st.caption("⏱️ " + " · ".join(f"{k} {fmt_t(v)}" for k, v in st.session_state["t1"].items()))
 
-    section(3, "ဘာသာပြန် / ဇာတ်လမ်းပြန် (Gemini)")
+    section(3, "ဘာသာပြန် (Gemini)")
     if st.session_state.get("manual"):
+        st.caption("① အောက်က စာသား Copy → ② Gemini app မှာ **New chat** ဖွင့်ပြီး paste → ③ ရလဒ် အောက်ကွက်ထဲ paste → ④ Apply")
         pmode = st.radio(
             "Prompt အမျိုးအစား",
             ["🎙️ Dubbing (စာကြောင်းလိုက် ဘာသာပြန်)", "📝 Recap (ဇာတ်လမ်းပြန်ပြော)"],
             horizontal=True, key="pmode",
         )
-        
-        is_recap = pmode.startswith("📝")
-        
-        if is_recap:
-            st.caption("💡 **Recap လုပ်နည်း (အဆင့် ၂ ဆင့်)**:")
-            
-            # ------ Recap Step 1 ------
-            st.markdown("**(၁) ဇာတ်လမ်းအကျဉ်းချုပ် ရေးခိုင်းရန် Prompt**")
-            p1 = build_prompt(units, "recap", step=1)
-            st.code(p1, language=None)
-            
-            st.markdown("**(၂) Gemini ရလဒ် (ဇာတ်လမ်းအကျဉ်းချုပ်) ကို ဒီမှာ Paste လုပ်ပါ**")
-            recap_text = st.text_area("Recap Text", height=120, key="recap_text", label_visibility="collapsed")
-            
-            if recap_text.strip():
-                st.markdown("**(၃) စာကြောင်းခွဲဖို့ (Sync အတွက်) Prompt**")
-                p2 = build_prompt(units, "recap", step=2, recap_text=recap_text)
-                st.code(p2, language=None)
-                
-                st.markdown("**(၄) Gemini ရလဒ် (စာကြောင်းခွဲပြီး) ကို ဒီမှာ Paste လုပ်ပါ**")
-                pasted = st.text_area("Gemini Output", height=160, key="gem_paste", placeholder="[0] မြန်မာစာ...\n[1] မြန်မာစာ...", label_visibility="collapsed")
-            else:
-                pasted = ""
-                st.info("အပေါ်က (၂) မှာ ဇာတ်လမ်းအကျဉ်းချုပ်ကို အရင် Paste လုပ်ပါ။")
-                
-        else:
-            st.caption("① အောက်က စာသား Copy → ② Gemini app မှာ paste → ③ ရလဒ် အောက်ကွက်ထဲ paste → ④ Apply")
-            p1 = build_prompt(units, "dub")
-            st.code(p1, language=None)
-            pasted = st.text_area("📥 Gemini ရလဒ်", height=160, key="gem_paste",
-                                  placeholder="[0] မြန်မာစာ...\n[1] မြန်မာစာ...",
-                                  label_visibility="collapsed")
-
+        st.warning("⚠️ Prompt အမျိုးအစား ပြောင်းတိုင်း Gemini မှာ chat အသစ် ဖွင့်ပါ။ Chat တစ်ခုထဲမှာ နှစ်မျိုးလုံးပို့ရင် ရလဒ် တူသွားတတ်တယ်။")
+        st.code(build_prompt(units, "dub" if pmode.startswith("🎙️") else "recap"), language=None)
+        pasted = st.text_area("📥 Gemini ရလဒ်", height=160, key="gem_paste",
+                              placeholder="[0] မြန်မာစာ...\n[1] မြန်မာစာ...",
+                              label_visibility="collapsed")
         if st.button("✅ Apply", use_container_width=True):
-            if not pasted.strip():
-                st.warning("Gemini ရလဒ် ကို အရင် Paste လုပ်ပါ။")
-            else:
-                got = parse_numbered(pasted, len(units))
-                for i, t in got.items():
-                    units[i]["my"] = clean_my(t)
-                missing = [i for i in range(len(units)) if not units[i]["my"]]
-                st.session_state["apply_msg"] = (
-                    f"ဖြည့်ပြီး {len(got)}/{len(units)}"
-                    + (f" · မပါ: {missing[:15]}" if missing else " ✅"))
-                st.session_state["ver"] = st.session_state.get("ver", 0) + 1
-                st.rerun()
+            got = parse_numbered(pasted, len(units))
+            for i, t in got.items():
+                units[i]["my"] = clean_my(t)
+            missing = [i for i in range(len(units)) if not units[i]["my"]]
+            st.session_state["apply_msg"] = (
+                f"ဖြည့်ပြီး {len(got)}/{len(units)}"
+                + (f" · မပါ: {missing[:15]}" if missing else " ✅"))
+            st.session_state["ver"] = st.session_state.get("ver", 0) + 1
+            st.rerun()
         if st.session_state.get("apply_msg"):
             st.info(st.session_state["apply_msg"])
 
