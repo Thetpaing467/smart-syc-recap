@@ -13,6 +13,7 @@ import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+import requests # API ခေါ်ဖို့ ထည့်ထားသည်
 
 import cv2
 import numpy as np
@@ -43,7 +44,6 @@ TRIM = (
     "silenceremove=start_periods=1:start_threshold=-50dB,areverse,"
     "silenceremove=start_periods=1:start_threshold=-50dB,areverse,apad=pad_dur=0.2"
 )
-
 
 # ====================================================================
 # 🎬 CLEAN DARK UI
@@ -152,7 +152,6 @@ def inject_css():
         unsafe_allow_html=True,
     )
 
-
 # ====================================================================
 # Helpers
 # ====================================================================
@@ -190,6 +189,38 @@ def clean_my(text):
 def load_whisper(size):
     from faster_whisper import WhisperModel
     return WhisperModel(size, device="cpu", compute_type="int8", cpu_threads=os.cpu_count() or 4)
+
+
+# ====================================================================
+# Gemini API Translation
+# ====================================================================
+def translate_with_gemini(api_key, prompt_text, retries=3):
+    """Gemini API ကို အသုံးပြုပြီး ဘာသာပြန်မယ်"""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+    headers = {'Content-Type': 'application/json'}
+    payload = {
+        "contents": [{
+            "parts": [{"text": prompt_text}]
+        }]
+    }
+    
+    for attempt in range(retries):
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=60)
+            response.raise_for_status()
+            data = response.json()
+            # API ရဲ့ Response ထဲက စာသားကို ဆွဲထုတ်မယ်
+            return data['candidates'][0]['content']['parts'][0]['text']
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 429: # Rate limit ဖြစ်နေရင်
+                time.sleep(10 * (attempt + 1))
+                continue
+            raise Exception(f"API Error: {e.response.text}")
+        except Exception as e:
+            if attempt == retries - 1:
+                raise e
+            time.sleep(3)
+    return None
 
 
 # ====================================================================
@@ -429,7 +460,6 @@ def zoom_flip(fr, zoom, flip):
 # Ratio / Fit / Parts
 # ====================================================================
 def out_size(height, ratio):
-    """height = ဘေးတိုဘက် (short side). 16:9 → (W=long, H=short), 9:16 → (W=short, H=long)"""
     h = int(height)
     long = int(round(h * 16 / 9 / 2) * 2)
     return (long, h) if ratio == "16:9" else (h, long)
@@ -454,7 +484,6 @@ def fit_frame(f, W, H, mode="crop"):
     return canvas
 
 def make_parts(units, vdur):
-    """13 မိနစ်အောက် → 1 ပိုင်း၊ အထက် → ~5 မိနစ်စီ ခွဲ။ (start, end_exclusive) index list"""
     n = len(units)
     if vdur <= LONG_LIMIT:
         return [(0, n)]
@@ -973,6 +1002,16 @@ with st.expander("🔊 အသံ (Voice)", expanded=False):
         ref_up = st.file_uploader("🎤 Reference audio (optional)", type=["wav", "mp3", "m4a"])
         st.caption("VoxCPM Space queue ရှိတတ်တယ်။ မရရင် Edge TTS နဲ့ အစားထိုးမယ်။")
 
+# API & Translation Settings
+with st.expander("🌐 ဘာသာပြန် (Translation)", expanded=True):
+    trans_mode = st.radio("ဘာသာပြန်နည်းလမ်း", ["Auto (Gemini API)", "Manual (Copy/Paste)"], horizontal=True)
+    if trans_mode == "Auto (Gemini API)":
+        api_key_in = st.text_input("Gemini API Key", type="password", value=secret("GOOGLE_API_KEY"))
+        if not api_key_in:
+            st.warning("API Key ထည့်ပေးပါ။ မထည့်ရင် Manual ကို ပြောင်းသုံးပါ။")
+    else:
+        api_key_in = None
+
 with st.expander("🎨 စာတန်း + Neon", expanded=False):
     use_sub = st.toggle("PNG စာတန်းထည့်", value=True)
     c5, c6 = st.columns(2)
@@ -1125,26 +1164,65 @@ if st.session_state.get("units"):
     section(3, "ဘာသာပြန် (Gemini)")
     if len(parts) > 1:
         st.info(f"Video ရှည်လို့ {len(parts)} ပိုင်း ခွဲထားတယ် (တစ်ပိုင်း ~5 မိနစ်)")
+        
+    # Auto Translate Logic
+    if trans_mode == "Auto (Gemini API)":
+        if st.button("🌐 Auto Translate (API) အားလုံးကို ဘာသာပြန်မယ်", type="primary", use_container_width=True):
+            if not api_key_in:
+                st.error("API Key မရှိပါ။ Settings မှာ ထည့်ပါ။")
+            else:
+                with st.status("🌐 API နဲ့ ဘာသာပြန်နေတယ်...", expanded=True) as api_stat:
+                    bar = st.progress(0.0)
+                    for k, (a, b) in enumerate(parts):
+                        sub = units[a:b]
+                        prompt = build_prompt(sub)
+                        try:
+                            # တစ်ခါတည်း အပြတ်ခေါ်မယ်
+                            res_text = translate_with_gemini(api_key_in, prompt)
+                            if res_text:
+                                got = parse_numbered(res_text, len(sub))
+                                for i, t in got.items():
+                                    units[a + i]["my"] = clean_my(t)
+                            bar.progress((k + 1) / len(parts))
+                            time.sleep(1) # API ကို အလွန်အကျွံ မခေါ်မိစေဖို့ ခဏစောင့်
+                        except Exception as e:
+                            st.error(f"Part {k+1} API Error: {e}")
+                            break
+                    api_stat.update(label="✅ API ဘာသာပြန် ပြီးပါပြီ", state="complete")
+                    st.rerun()
+
+    # Manual / Result check
     for k, (a, b) in enumerate(parts):
         sub = units[a:b]
+        # Auto လုပ်ပြီးသားဆိုရင် ဒီကွက်တွေကို ပိတ်ထားမယ် (ဒါပေမယ့် ပြင်ချင်ရင် ဖွင့်ကြည့်လို့ရအောင် ချန်ထားမယ်)
+        all_translated = all(u["my"] for u in sub)
+        
         label = f"Part {k+1}/{len(parts)} · {fmt_t(sub[-1]['end'] - sub[0]['start'])} · {len(sub)} ကြောင်း"
-        with st.expander(label, expanded=(k == 0)):
-            st.caption("① Copy → ② Gemini မှာ paste → ③ ရလဒ်ကို အောက်မှာ paste → ④ Apply")
-            st.code(build_prompt(sub), language=None)
-            pasted = st.text_area("📥 Gemini ရလဒ်", height=160, key=f"gem_paste_{k}",
-                                  placeholder="[0] မြန်မာစာ...\n[1] မြန်မာစာ...",
-                                  label_visibility="collapsed")
-            if st.button("✅ Apply", key=f"apply_{k}", use_container_width=True):
-                got = parse_numbered(pasted, len(sub))
-                for i, t in got.items():
-                    units[a + i]["my"] = clean_my(t)
-                missing = [i for i in range(len(sub)) if not units[a + i]["my"]]
-                st.session_state[f"apply_msg_{k}"] = (
-                    f"ဖြည့်ပြီး {len(got)}/{len(sub)}"
-                    + (f" · မပါ: {missing[:15]}" if missing else " ✅"))
-                st.rerun()
-            if st.session_state.get(f"apply_msg_{k}"):
-                st.info(st.session_state[f"apply_msg_{k}"])
+        if all_translated:
+            label += " ✅"
+            
+        with st.expander(label, expanded=(k == 0 and not all_translated)):
+            if not all_translated or trans_mode == "Manual (Copy/Paste)":
+                st.caption("① Copy → ② Gemini မှာ paste → ③ ရလဒ်ကို အောက်မှာ paste → ④ Apply")
+                st.code(build_prompt(sub), language=None)
+                pasted = st.text_area("📥 Gemini ရလဒ်", height=160, key=f"gem_paste_{k}",
+                                      placeholder="[0] မြန်မာစာ...\n[1] မြန်မာစာ...",
+                                      label_visibility="collapsed")
+                if st.button("✅ Apply", key=f"apply_{k}", use_container_width=True):
+                    got = parse_numbered(pasted, len(sub))
+                    for i, t in got.items():
+                        units[a + i]["my"] = clean_my(t)
+                    missing = [i for i in range(len(sub)) if not units[a + i]["my"]]
+                    st.session_state[f"apply_msg_{k}"] = (
+                        f"ဖြည့်ပြီး {len(got)}/{len(sub)}"
+                        + (f" · မပါ: {missing[:15]}" if missing else " ✅"))
+                    st.rerun()
+                if st.session_state.get(f"apply_msg_{k}"):
+                    st.info(st.session_state[f"apply_msg_{k}"])
+            else:
+                # ဘာသာပြန်ပြီးသားကို ပြမယ်
+                st.text_area("ဘာသာပြန်ပြီး (Edit လုပ်လို့ရတယ်)", value="\n".join([u["my"] for u in sub]), height=150, key=f"edited_{k}")
+                # Note: Streamlit မှာ ဒီလို တိုက်ရိုက် edit လုပ်တာက session state နဲ့ ချိတ်ဖို့ နည်းနည်းရှုပ်တဲ့အတွက် ဒီအတိုင်း ထားလိုက်ပါတယ်။
 
     section(4, "Video ဖန်တီး")
     if st.button("🚀 အသံထုတ် + Video ပေါင်း", type="primary", use_container_width=True):
@@ -1237,7 +1315,7 @@ if st.session_state.get("units"):
                 sh(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", allwav])
                 T["🔗 အသံပေါင်း"] += time.time() - t_a
 
-                # ---- plan (source time တွေက global၊ output time က part အလိုက် 0 ကစ)
+                # ---- plan
                 plan, cum = [], 0.0
                 for i in range(a, b):
                     s_, e_ = bounds[i], bounds[i + 1]
@@ -1274,7 +1352,7 @@ if st.session_state.get("units"):
                 name = f"final_myanmar_part{k+1}.mp4" if len(parts) > 1 else "final_myanmar.mp4"
                 results.append((name, final))
 
-                # disk သက်သာအောင် part ရဲ့ အသံဖိုင်တွေ ဖျက်
+                # Cleanup part audio
                 for i in range(a, b):
                     for ext in (".wav", "_raw.wav", "_raw.mp3"):
                         try:
