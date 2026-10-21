@@ -188,6 +188,17 @@ def load_whisper(size):
     from faster_whisper import WhisperModel
     return WhisperModel(size, device="cpu", compute_type="int8", cpu_threads=os.cpu_count() or 4)
 
+# === Video Split Function (အသစ်ထည့်ထားသည်) ===
+def split_video_ffmpeg(input_path, output_pattern, chunk_seconds=300):
+    cmd = [
+        "ffmpeg", "-y", "-i", input_path,
+        "-c", "copy", "-map", "0",
+        "-segment_time", str(chunk_seconds),
+        "-f", "segment", "-reset_timestamps", "1",
+        output_pattern
+    ]
+    subprocess.run(cmd, check=True, capture_output=True)
+
 
 # ====================================================================
 # TTS
@@ -924,7 +935,7 @@ with st.expander("⚙️ Settings", expanded=False):
     c3, c4 = st.columns(2)
     height = c3.select_slider("Output height", [360, 480, 720, 1080], value=720)
     max_speed = c4.slider("အမြန်ဆုံး ဆ", 1.0, 2.0, 1.25, 0.05)
-    max_min = st.slider("Video အရှည် (မိနစ်)", 1, 15, 6)
+    max_min = st.slider("Video အရှည် (မိနစ်)", 1, 30, 15) # အများဆုံး 30 မိနစ်အထိ တင်လို့ရအောင် ပြင်ထားသည်
     preset = st.selectbox("Render speed", ["ultrafast", "superfast", "veryfast"], index=0)
 
 with st.expander("🔊 အသံ (Voice)", expanded=False):
@@ -1014,7 +1025,7 @@ if vid_path:
 
 
 # ====================================================================
-# STEP 2: Transcribe
+# STEP 2: Transcribe (ဒီအပိုင်းမှာ ၁၃ မိနစ်ကျော်ရင် ဖြတ်တဲ့စနစ် ထည့်ထားပါတယ်)
 # ====================================================================
 section(2, "စာသားထုတ်")
 if st.button("🎧 စာသားထုတ်", type="primary", disabled=not vid_path, use_container_width=True):
@@ -1033,41 +1044,98 @@ if st.button("🎧 စာသားထုတ်", type="primary", disabled=not vi
         st.session_state["vdur"] = vdur
 
         T1 = {}
-        with st.status("🎧 Whisper...", expanded=True) as stt:
-            t_a = time.time()
-            wav = os.path.join(wd, "audio16k.wav")
-            sh(["ffmpeg", "-y", "-i", src, "-vn", "-ac", "1", "-ar", "16000", wav])
-            with wave.open(wav) as wf:
-                audio = np.frombuffer(
-                    wf.readframes(wf.getnframes()), dtype=np.int16
-                ).astype(np.float32) / 32768.0
-            T1["🎞️ Audio"] = time.time() - t_a
-            t_a = time.time()
-            wm = load_whisper(wsize)
-            T1["📦 Model"] = time.time() - t_a
-            t_a = time.time()
-            segs, info = wm.transcribe(
-                audio, language=None if src_lang == "auto" else src_lang,
-                vad_filter=True, beam_size=1, condition_on_previous_text=False)
-            st.write(f"🌐 {info.language} ({info.language_probability:.0%})")
-            bar = st.progress(0.0)
-            raw = []
-            for s in segs:
-                if s.text.strip():
-                    raw.append((s.start, s.end, s.text.strip()))
-                bar.progress(min(s.end / vdur, 1.0))
-            T1["🎧 Whisper"] = time.time() - t_a
-            units = []
-            for s, e, t in raw:
-                if units and (units[-1][1] - units[-1][0]) < TARGET and (e - units[-1][0]) <= MAXD:
-                    units[-1] = (units[-1][0], e, units[-1][2] + " " + t)
-                else:
-                    units.append((s, e, t))
-            if not units:
-                stt.update(label="စကားပြောသံ မတွေ့ပါ", state="error")
-                st.stop()
-            stt.update(label=f"✅ {len(units)} ပိုင်း · {fmt_t(sum(T1.values()))}", state="complete")
-            st.session_state["t1"] = T1
+        
+        # ၁၃ မိနစ် (၇၈၀ စက္ကန့်) ကျော်ရင် အပိုင်းလိုက် ဖြတ်မယ်
+        if vdur > 780: 
+            st.info("⏳ ဗီဒီယိုက ၁၃ မိနစ်ကျော်နေလို့ ၅ မိနစ်စီ ဖြတ်ပြီး အဆင့်ဆင့် လုပ်ပါမယ်။")
+            chunk_dir = os.path.join(wd, "chunks")
+            os.makedirs(chunk_dir, exist_ok=True)
+            # ၅ မိနစ် = ၃၀၀ စက္ကန့်
+            split_video_ffmpeg(src, os.path.join(chunk_dir, "part_%03d.mp4"), chunk_seconds=300)
+            
+            chunk_files = sorted(glob.glob(os.path.join(chunk_dir, "part_*.mp4")))
+            all_raw_segments = []
+            
+            with st.status(f"🎧 Whisper (အပိုင်း {len(chunk_files)} ခု)...", expanded=True) as stt:
+                t_a = time.time()
+                wm = load_whisper(wsize)
+                T1["📦 Model"] = time.time() - t_a
+                
+                bar = st.progress(0.0)
+                for idx, chunk_file in enumerate(chunk_files):
+                    st.write(f"🔄 အပိုင်း {idx+1}/{len(chunk_files)} ကို စာသားပြောင်းနေတယ်...")
+                    
+                    # အပိုင်းတစ်ခုချင်းစီအတွက် အသံထုတ်မယ်
+                    wav = os.path.join(wd, f"audio16k_{idx}.wav")
+                    sh(["ffmpeg", "-y", "-i", chunk_file, "-vn", "-ac", "1", "-ar", "16000", wav])
+                    
+                    with wave.open(wav) as wf:
+                        audio = np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
+                    
+                    # Whisper run မယ်
+                    segs, info = wm.transcribe(audio, language=None if src_lang == "auto" else src_lang, vad_filter=True, beam_size=1, condition_on_previous_text=False)
+                    
+                    # အပိုင်းတစ်ခုစီရဲ့ အစ (offset) ကို တွက်မယ်
+                    chunk_offset = idx * 300.0 # ၅ မိနစ် = ၃၀၀ စက္ကန့်
+                    
+                    for s in segs:
+                        if s.text.strip():
+                            # မူလဗီဒီယိုရဲ့ အချိန်အမှန်ကို ပြန်တွက်မယ်
+                            real_start = s.start + chunk_offset
+                            real_end = s.end + chunk_offset
+                            all_raw_segments.append((real_start, real_end, s.text.strip()))
+                    
+                    bar.progress((idx + 1) / len(chunk_files))
+                    
+                T1["🎧 Whisper"] = time.time() - t_a
+                
+                # ရလာတဲ့ segments တွေကို ပေါင်းမယ်
+                units = []
+                for s, e, t in all_raw_segments:
+                    if units and (units[-1][1] - units[-1][0]) < TARGET and (e - units[-1][0]) <= MAXD:
+                        units[-1] = (units[-1][0], e, units[-1][2] + " " + t)
+                    else:
+                        units.append((s, e, t))
+                
+                if not units:
+                    stt.update(label="စကားပြောသံ မတွေ့ပါ", state="error")
+                    st.stop()
+                stt.update(label=f"✅ {len(units)} ပိုင်း · {fmt_t(sum(T1.values()))}", state="complete")
+                st.session_state["t1"] = T1
+        
+        else:
+            # ပုံမှန်အတိုင်း (၁၃ မိနစ်အောက်) လုပ်မယ်
+            with st.status("🎧 Whisper...", expanded=True) as stt:
+                t_a = time.time()
+                wav = os.path.join(wd, "audio16k.wav")
+                sh(["ffmpeg", "-y", "-i", src, "-vn", "-ac", "1", "-ar", "16000", wav])
+                with wave.open(wav) as wf:
+                    audio = np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
+                T1["🎞️ Audio"] = time.time() - t_a
+                t_a = time.time()
+                wm = load_whisper(wsize)
+                T1["📦 Model"] = time.time() - t_a
+                t_a = time.time()
+                segs, info = wm.transcribe(audio, language=None if src_lang == "auto" else src_lang, vad_filter=True, beam_size=1, condition_on_previous_text=False)
+                st.write(f"🌐 {info.language} ({info.language_probability:.0%})")
+                bar = st.progress(0.0)
+                raw = []
+                for s in segs:
+                    if s.text.strip():
+                        raw.append((s.start, s.end, s.text.strip()))
+                    bar.progress(min(s.end / vdur, 1.0))
+                T1["🎧 Whisper"] = time.time() - t_a
+                units = []
+                for s, e, t in raw:
+                    if units and (units[-1][1] - units[-1][0]) < TARGET and (e - units[-1][0]) <= MAXD:
+                        units[-1] = (units[-1][0], e, units[-1][2] + " " + t)
+                    else:
+                        units.append((s, e, t))
+                if not units:
+                    stt.update(label="စကားပြောသံ မတွေ့ပါ", state="error")
+                    st.stop()
+                stt.update(label=f"✅ {len(units)} ပိုင်း · {fmt_t(sum(T1.values()))}", state="complete")
+                st.session_state["t1"] = T1
 
         st.session_state["units"] = [
             {"start": units[i][0], "end": units[i][1], "src": units[i][2], "my": ""}
