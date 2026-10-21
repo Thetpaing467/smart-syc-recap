@@ -972,7 +972,7 @@ src_lang = "auto"
 wsize = "base"
 height = 720
 max_speed = 1.25
-max_min = 6
+max_min = 20
 preset = "ultrafast"
 
 # ---- Settings expander (only TTS + Subtitle + Neon)
