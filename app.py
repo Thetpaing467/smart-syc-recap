@@ -13,7 +13,7 @@ import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
-import requests # API ခေါ်ဖို့ ထည့်ထားသည်
+import requests 
 
 import cv2
 import numpy as np
@@ -195,7 +195,6 @@ def load_whisper(size):
 # Gemini API Translation
 # ====================================================================
 def translate_with_gemini(api_key, prompt_text, retries=3):
-    """Gemini API ကို အသုံးပြုပြီး ဘာသာပြန်မယ်"""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
     headers = {'Content-Type': 'application/json'}
     payload = {
@@ -209,10 +208,9 @@ def translate_with_gemini(api_key, prompt_text, retries=3):
             response = requests.post(url, headers=headers, json=payload, timeout=60)
             response.raise_for_status()
             data = response.json()
-            # API ရဲ့ Response ထဲက စာသားကို ဆွဲထုတ်မယ်
             return data['candidates'][0]['content']['parts'][0]['text']
         except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 429: # Rate limit ဖြစ်နေရင်
+            if e.response.status_code == 429: 
                 time.sleep(10 * (attempt + 1))
                 continue
             raise Exception(f"API Error: {e.response.text}")
@@ -985,11 +983,12 @@ st.markdown(
 with st.expander("⚙️ Settings", expanded=False):
     c1, c2 = st.columns(2)
     src_lang = c1.selectbox("မူရင်းဘာသာ", ["auto", "en", "zh", "ko", "ja", "hi", "th", "vi", "id"])
-    ratio = c2.radio("Ratio", ["16:9", "9:16"], horizontal=True)
+    ratio = c2.radio("Ratio", ["16:9", "9:16"], index=1, horizontal=True) # 9:16 ကို Default ထားသည်
     c3, c4 = st.columns(2)
-    height = c3.select_slider("Quality (p)", [360, 480, 720, 1080], value=720)
-    max_speed = c4.slider("အမြန်ဆုံး ဆ", 1.0, 2.0, 1.25, 0.05)
-    fit_mode = st.radio("Frame", ["Crop (အပြည့်)", "Fit (အနားကွက်)"], horizontal=True)
+    # Quality slider ဖျောက်ထားပြီး 720 ကို ပုံသေထားသည်
+    height = 720 
+    max_speed = c3.slider("အမြန်ဆုံး ဆ", 1.0, 2.0, 1.25, 0.05)
+    fit_mode = c4.radio("Frame", ["Crop (အပြည့်)", "Fit (အနားကွက်)"], horizontal=True)
     preset = st.selectbox("Render speed", ["ultrafast", "superfast", "veryfast"], index=0)
 
 with st.expander("🔊 အသံ (Voice)", expanded=False):
@@ -1006,7 +1005,14 @@ with st.expander("🔊 အသံ (Voice)", expanded=False):
 with st.expander("🌐 ဘာသာပြန် (Translation)", expanded=True):
     trans_mode = st.radio("ဘာသာပြန်နည်းလမ်း", ["Auto (Gemini API)", "Manual (Copy/Paste)"], horizontal=True)
     if trans_mode == "Auto (Gemini API)":
-        api_key_in = st.text_input("Gemini API Key", type="password", value=secret("GOOGLE_API_KEY"))
+        # Session state မှာ key ရှိပြီးသားဆိုရင် ပြန်မတောင်းတော့ဘူး
+        if "gemini_api_key" not in st.session_state:
+            st.session_state["gemini_api_key"] = secret("GOOGLE_API_KEY")
+        
+        api_key_in = st.text_input("Gemini API Key", type="password", value=st.session_state["gemini_api_key"])
+        if api_key_in != st.session_state["gemini_api_key"]:
+            st.session_state["gemini_api_key"] = api_key_in
+
         if not api_key_in:
             st.warning("API Key ထည့်ပေးပါ။ မထည့်ရင် Manual ကို ပြောင်းသုံးပါ။")
     else:
@@ -1017,7 +1023,13 @@ with st.expander("🎨 စာတန်း + Neon", expanded=False):
     c5, c6 = st.columns(2)
     sub_size = c5.slider("စာအရွယ် (%)", 3.0, 12.0, 7.0, 0.5)
     sub_pos = c6.slider("နေရာ", 0, 100, 90, 1)
+    
     use_neon = st.toggle("Neon border", value=True)
+    c7, c8 = st.columns(2)
+    # Neon Slider အသစ်များ
+    neon_th = c7.slider("Neon အထူ", 2, 30, 10, 1)
+    neon_speed = c8.slider("Neon အလျင်အမြန်", 0.1, 2.0, 0.4, 0.1)
+    
     zoom = st.slider("Zoom", 1.0, 1.25, 1.0, 0.01)
     font_path = find_font()
     if not font_path:
@@ -1026,8 +1038,6 @@ with st.expander("🎨 စာတန်း + Neon", expanded=False):
         st.warning("raqm မရှိလို့ မြန်မာစာ ပုံစံ မမှန်နိုင်ပါ")
 
 rate = f"{rate_n:+d}%"
-neon_th = 10
-neon_speed = 0.4
 flip = True
 sub_style = {"alpha": int(0.8 * 255), "color": (255, 255, 255), "bold": 0, "layout": "raqm"}
 fit = "crop" if fit_mode.startswith("Crop") else "fit"
@@ -1184,7 +1194,7 @@ if st.session_state.get("units"):
                                 for i, t in got.items():
                                     units[a + i]["my"] = clean_my(t)
                             bar.progress((k + 1) / len(parts))
-                            time.sleep(1) # API ကို အလွန်အကျွံ မခေါ်မိစေဖို့ ခဏစောင့်
+                            time.sleep(2) # API ကို အလွန်အကျွံ မခေါ်မိစေဖို့ ၂ စက္ကန့် ခံပေးထားတယ်
                         except Exception as e:
                             st.error(f"Part {k+1} API Error: {e}")
                             break
@@ -1194,7 +1204,6 @@ if st.session_state.get("units"):
     # Manual / Result check
     for k, (a, b) in enumerate(parts):
         sub = units[a:b]
-        # Auto လုပ်ပြီးသားဆိုရင် ဒီကွက်တွေကို ပိတ်ထားမယ် (ဒါပေမယ့် ပြင်ချင်ရင် ဖွင့်ကြည့်လို့ရအောင် ချန်ထားမယ်)
         all_translated = all(u["my"] for u in sub)
         
         label = f"Part {k+1}/{len(parts)} · {fmt_t(sub[-1]['end'] - sub[0]['start'])} · {len(sub)} ကြောင်း"
@@ -1220,9 +1229,7 @@ if st.session_state.get("units"):
                 if st.session_state.get(f"apply_msg_{k}"):
                     st.info(st.session_state[f"apply_msg_{k}"])
             else:
-                # ဘာသာပြန်ပြီးသားကို ပြမယ်
                 st.text_area("ဘာသာပြန်ပြီး (Edit လုပ်လို့ရတယ်)", value="\n".join([u["my"] for u in sub]), height=150, key=f"edited_{k}")
-                # Note: Streamlit မှာ ဒီလို တိုက်ရိုက် edit လုပ်တာက session state နဲ့ ချိတ်ဖို့ နည်းနည်းရှုပ်တဲ့အတွက် ဒီအတိုင်း ထားလိုက်ပါတယ်။
 
     section(4, "Video ဖန်တီး")
     if st.button("🚀 အသံထုတ် + Video ပေါင်း", type="primary", use_container_width=True):
