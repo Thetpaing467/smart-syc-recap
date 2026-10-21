@@ -958,7 +958,6 @@ src_lang = "auto"
 wsize = "base"
 height = 720
 max_speed = 1.25
-max_min = 6
 preset = "ultrafast"
 
 # ---- Settings expander (only TTS + Subtitle + Neon)
@@ -1068,9 +1067,6 @@ if st.button("🎧 စာသားထုတ်", type="primary", disabled=not vi
 
     try:
         vdur = dur(src)
-        if vdur > max_min * 60:
-            st.error(f"Video က {vdur/60:.1f} မိနစ် · ကန့်သတ် {max_min} မိနစ်")
-            st.stop()
         st.session_state["vdur"] = vdur
 
         T1 = {}
