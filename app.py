@@ -916,21 +916,20 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ---- Settings
+# ---- Fixed settings (no UI)
+src_lang = "auto"
+wsize = "base"
+height = 720
+max_speed = 1.25
+max_min = 6
+preset = "ultrafast"
+
+# ---- Settings expander (only TTS + Subtitle + Neon)
 with st.expander("⚙️ Settings", expanded=False):
     c1, c2 = st.columns(2)
-    src_lang = c1.selectbox("မူရင်းဘာသာ", ["auto", "en", "zh", "ko", "ja", "hi", "th", "vi", "id"])
-    wsize = c2.selectbox("Whisper model", ["tiny", "base", "small"], index=1)
-    c3, c4 = st.columns(2)
-    height = c3.select_slider("Output height", [360, 480, 720, 1080], value=720)
-    max_speed = c4.slider("အမြန်ဆုံး ဆ", 1.0, 2.0, 1.25, 0.05)
-    max_min = st.slider("Video အရှည် (မိနစ်)", 1, 15, 6)
-    preset = st.selectbox("Render speed", ["ultrafast", "superfast", "veryfast"], index=0)
-
-with st.expander("🔊 အသံ (Voice)", expanded=False):
+    voice = c1.selectbox("Edge voice", ["my-MM-ThihaNeural", "my-MM-NilarNeural"], format_func=lambda v: "👨 Thiha" if "Thiha" in v else "👩 Nilar")
+    rate_n = c2.slider("Edge speed %", 45, 100, 45, 5)
     engine = st.radio("TTS engine", ["Edge TTS", "VoxCPM (မရရင် Edge auto)"], horizontal=True)
-    voice = st.selectbox("Edge voice", ["my-MM-ThihaNeural", "my-MM-NilarNeural"], format_func=lambda v: "👨 Thiha" if "Thiha" in v else "👩 Nilar")
-    rate_n = st.slider("Edge speed %", -50, 100, 0, 5)
     tts_workers = st.slider("TTS တစ်ပြိုင်နက်", 1, 10, 6)
     ref_up = None
     if engine.startswith("Vox"):
@@ -943,6 +942,13 @@ with st.expander("🎨 စာတန်း + Neon", expanded=False):
     sub_size = c5.slider("စာအရွယ် (%)", 3.0, 12.0, 7.0, 0.5)
     sub_pos = c6.slider("နေရာ", 0, 100, 90, 1)
     use_neon = st.toggle("Neon border", value=True)
+    if use_neon:
+        c7, c8 = st.columns(2)
+        neon_th = c7.slider("Neon အထူ", 2, 60, 10, 1)
+        neon_speed = c8.slider("Neon အမြန်နှုန်း", 0.05, 2.0, 0.4, 0.05)
+    else:
+        neon_th = 10
+        neon_speed = 0.4
     zoom = st.slider("Zoom", 1.0, 1.25, 1.0, 0.01)
     font_path = find_font()
     if not font_path:
@@ -950,9 +956,7 @@ with st.expander("🎨 စာတန်း + Neon", expanded=False):
     if not features.check("raqm"):
         st.warning("raqm မရှိလို့ မြန်မာစာ ပုံစံ မမှန်နိုင်ပါ")
 
-rate = f"{rate_n:+d}%"
-neon_th = 10
-neon_speed = 0.4
+rate = f"+{rate_n}%"
 flip = True
 sub_style = {"alpha": int(0.8 * 255), "color": (255, 255, 255), "bold": 0, "layout": "raqm"}
 proxy = secret("EDGE_TTS_PROXY") or None
@@ -960,11 +964,11 @@ hf_token = secret("HF_TOKEN") or None
 
 
 # ====================================================================
-# STEP 1: Video Input (Upload / Link)
+# STEP 1: Video Input (Link first)
 # ====================================================================
 section(1, "Video ရွေးပါ")
 
-mode = st.radio("Video ရင်းမြစ်", ["📁 Upload", "🔗 Link"], horizontal=True, label_visibility="collapsed")
+mode = st.radio("Video ရင်းမြစ်", ["🔗 Link", "📁 Upload"], horizontal=True, label_visibility="collapsed")
 vid_path = None
 
 if mode == "📁 Upload":
