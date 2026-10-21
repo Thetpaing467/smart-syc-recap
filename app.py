@@ -30,6 +30,9 @@ st.set_page_config(
 )
 
 TARGET, MAXD = 4.2, 5.6
+LONG_LIMIT = 13 * 60   # ဒီထက်ရှည်ရင် အပိုင်းခွဲမယ်
+CHUNK_SEC = 5 * 60     # အပိုင်းတစ်ခု ~5 မိနစ်
+WSIZE = "base"         # Whisper model ပုံသေ
 
 VOX_SPACES = [
     {"space": "openbmb/VoxCPM-Demo", "type": "demo"},
@@ -187,17 +190,6 @@ def clean_my(text):
 def load_whisper(size):
     from faster_whisper import WhisperModel
     return WhisperModel(size, device="cpu", compute_type="int8", cpu_threads=os.cpu_count() or 4)
-
-# === Video Split Function (အသစ်ထည့်ထားသည်) ===
-def split_video_ffmpeg(input_path, output_pattern, chunk_seconds=300):
-    cmd = [
-        "ffmpeg", "-y", "-i", input_path,
-        "-c", "copy", "-map", "0",
-        "-segment_time", str(chunk_seconds),
-        "-f", "segment", "-reset_timestamps", "1",
-        output_pattern
-    ]
-    subprocess.run(cmd, check=True, capture_output=True)
 
 
 # ====================================================================
@@ -432,14 +424,59 @@ def zoom_flip(fr, zoom, flip):
         fr = fr[:, ::-1]
     return np.ascontiguousarray(fr)
 
-def render_final(src, audio, out, plan, total, height, subs, font_path, fs_pct, pos_y, neon_on, neon_th, neon_speed, flip, zoom, style=None, preset="ultrafast", progress=None, fps_out=30):
+
+# ====================================================================
+# Ratio / Fit / Parts
+# ====================================================================
+def out_size(height, ratio):
+    """height = ဘေးတိုဘက် (short side). 16:9 → (W=long, H=short), 9:16 → (W=short, H=long)"""
+    h = int(height)
+    long = int(round(h * 16 / 9 / 2) * 2)
+    return (long, h) if ratio == "16:9" else (h, long)
+
+def fit_frame(f, W, H, mode="crop"):
+    h, w = f.shape[:2]
+    if w == W and h == H:
+        return f
+    if mode == "crop":
+        s = max(W / w, H / h)
+        nw, nh = max(W, int(np.ceil(w * s))), max(H, int(np.ceil(h * s)))
+    else:
+        s = min(W / w, H / h)
+        nw, nh = min(W, max(2, int(round(w * s)))), min(H, max(2, int(round(h * s))))
+    r = cv2.resize(f, (nw, nh), interpolation=cv2.INTER_AREA if s < 1 else cv2.INTER_LINEAR)
+    if mode == "crop":
+        x0, y0 = (nw - W) // 2, (nh - H) // 2
+        return np.ascontiguousarray(r[y0:y0 + H, x0:x0 + W])
+    canvas = np.zeros((H, W, 3), np.uint8)
+    x0, y0 = (W - nw) // 2, (H - nh) // 2
+    canvas[y0:y0 + nh, x0:x0 + nw] = r
+    return canvas
+
+def make_parts(units, vdur):
+    """13 မိနစ်အောက် → 1 ပိုင်း၊ အထက် → ~5 မိနစ်စီ ခွဲ။ (start, end_exclusive) index list"""
+    n = len(units)
+    if vdur <= LONG_LIMIT:
+        return [(0, n)]
+    parts, a = [], 0
+    for i in range(n):
+        if units[i]["end"] - units[a]["start"] >= CHUNK_SEC:
+            parts.append((a, i + 1))
+            a = i + 1
+    if a < n:
+        if parts and units[-1]["end"] - units[a]["start"] < 60:
+            parts[-1] = (parts[-1][0], n)
+        else:
+            parts.append((a, n))
+    return parts
+
+
+def render_final(src, audio, out, plan, total, size, subs, font_path, fs_pct, pos_y, neon_on, neon_th, neon_speed, flip, zoom, style=None, preset="ultrafast", progress=None, fps_out=30, fit="crop"):
     style = style or {}
     cap = cv2.VideoCapture(src)
     sfps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-    w0, h0 = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     stotal = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 10 ** 9
-    H = int(height)
-    W = int(round(w0 * H / h0 / 2) * 2)
+    W, H = size
     nfr = max(1, int(round(total * fps_out)))
     fs = max(16, int(W * fs_pct / 100))
     neon = Neon(W, H, neon_th, neon_speed) if neon_on else None
@@ -477,9 +514,7 @@ def render_final(src, audio, out, plan, total, height, subs, font_path, fs_pct, 
                 if new:
                     ok, f = cap.retrieve()
                     if ok:
-                        if f.shape[1] != W or f.shape[0] != H:
-                            f = cv2.resize(f, (W, H))
-                        last = f
+                        last = fit_frame(f, W, H, fit)
                 if last is None:
                     return
                 put(last.copy())
@@ -540,7 +575,7 @@ def render_final(src, audio, out, plan, total, height, subs, font_path, fs_pct, 
         progress.progress(1.0)
     return out
 
-def make_preview(path, height, text, font_path, fs_pct, pos_y, neon_on, neon_th, neon_speed, flip, zoom, style=None):
+def make_preview(path, size, text, font_path, fs_pct, pos_y, neon_on, neon_th, neon_speed, flip, zoom, style=None, fit="crop"):
     cap = cv2.VideoCapture(path)
     cap.set(cv2.CAP_PROP_POS_MSEC, 1000)
     ok, fr = cap.read()
@@ -550,10 +585,8 @@ def make_preview(path, height, text, font_path, fs_pct, pos_y, neon_on, neon_th,
     cap.release()
     if not ok:
         return None
-    h0, w0 = fr.shape[:2]
-    W = int(round(w0 * height / h0 / 2) * 2)
-    H = int(height)
-    fr = cv2.resize(fr, (W, H))
+    W, H = size
+    fr = fit_frame(fr, W, H, fit)
     fr = zoom_flip(fr, zoom, flip)
     if neon_on:
         Neon(W, H, neon_th, neon_speed).apply(fr, 1.0)
@@ -584,11 +617,12 @@ def reset_job():
     wd = st.session_state.get("wd")
     if wd and os.path.isdir(wd):
         shutil.rmtree(wd, ignore_errors=True)
-    for k in ("wd", "units", "vdur", "result", "manual", "apply_msg", "gem_paste", "t1", "t2"):
-        try:
-            st.session_state.pop(k, None)
-        except Exception:
-            pass
+    for k in list(st.session_state.keys()):
+        if k in ("wd", "units", "vdur", "result", "manual", "parts", "t1", "t2") or str(k).startswith(("gem_paste", "apply_msg", "show_vid_")):
+            try:
+                st.session_state.pop(k, None)
+            except Exception:
+                pass
 
 def cleanup_uploads():
     for p in st.session_state.get("up_paths", []):
@@ -599,15 +633,6 @@ def cleanup_uploads():
     st.session_state["up_paths"] = []
     st.session_state.pop("link_path", None)
     st.session_state["up_key"] = st.session_state.get("up_key", 0) + 1
-
-def cleanup_after_download():
-    wd = st.session_state.get("wd")
-    if wd and os.path.isdir(wd):
-        shutil.rmtree(wd, ignore_errors=True)
-    for k in ("wd", "units", "vdur", "manual", "apply_msg", "gem_paste"):
-        st.session_state.pop(k, None)
-    cleanup_uploads()
-    st.session_state["cleaned"] = True
 
 def save_upload(up):
     key = hashlib.md5(f"{up.name}-{up.size}".encode()).hexdigest()[:12]
@@ -931,17 +956,17 @@ st.markdown(
 with st.expander("⚙️ Settings", expanded=False):
     c1, c2 = st.columns(2)
     src_lang = c1.selectbox("မူရင်းဘာသာ", ["auto", "en", "zh", "ko", "ja", "hi", "th", "vi", "id"])
-    wsize = c2.selectbox("Whisper model", ["tiny", "base", "small"], index=1)
+    ratio = c2.radio("Ratio", ["16:9", "9:16"], horizontal=True)
     c3, c4 = st.columns(2)
-    height = c3.select_slider("Output height", [360, 480, 720, 1080], value=720)
+    height = c3.select_slider("Quality (p)", [360, 480, 720, 1080], value=720)
     max_speed = c4.slider("အမြန်ဆုံး ဆ", 1.0, 2.0, 1.25, 0.05)
-    max_min = st.slider("Video အရှည် (မိနစ်)", 1, 30, 15) # အများဆုံး 30 မိနစ်အထိ တင်လို့ရအောင် ပြင်ထားသည်
+    fit_mode = st.radio("Frame", ["Crop (အပြည့်)", "Fit (အနားကွက်)"], horizontal=True)
     preset = st.selectbox("Render speed", ["ultrafast", "superfast", "veryfast"], index=0)
 
 with st.expander("🔊 အသံ (Voice)", expanded=False):
     engine = st.radio("TTS engine", ["Edge TTS", "VoxCPM (မရရင် Edge auto)"], horizontal=True)
     voice = st.selectbox("Edge voice", ["my-MM-ThihaNeural", "my-MM-NilarNeural"], format_func=lambda v: "👨 Thiha" if "Thiha" in v else "👩 Nilar")
-    rate_n = st.slider("Edge speed %", -50, 100, 0, 5)
+    rate_n = st.slider("Edge speed %", -50, 100, 45, 5)
     tts_workers = st.slider("TTS တစ်ပြိုင်နက်", 1, 10, 6)
     ref_up = None
     if engine.startswith("Vox"):
@@ -966,6 +991,8 @@ neon_th = 10
 neon_speed = 0.4
 flip = True
 sub_style = {"alpha": int(0.8 * 255), "color": (255, 255, 255), "bold": 0, "layout": "raqm"}
+fit = "crop" if fit_mode.startswith("Crop") else "fit"
+size = out_size(height, ratio)
 proxy = secret("EDGE_TTS_PROXY") or None
 hf_token = secret("HF_TOKEN") or None
 
@@ -985,10 +1012,10 @@ if mode == "📁 Upload":
     if up:
         vid_path = save_upload(up)
 
-else: # Link Mode
+else:  # Link Mode
     url_in = st.text_input("Video link (direct mp4 / Google Drive / Dropbox / YouTube / Facebook / TikTok ...)",
                            placeholder="https://...", key="link_url", label_visibility="collapsed")
-    
+
     if st.button("⬇️ Link ကနေ ဆွဲမယ်", use_container_width=True, disabled=not url_in.strip()):
         with st.status("⬇️ Video ဆွဲနေတယ်...", expanded=True) as ds:
             dbar = st.progress(0.0, text="စတင်နေတယ်...")
@@ -1006,7 +1033,7 @@ else: # Link Mode
                 st.session_state.pop("link_src", None)
                 ds.update(label="❌ မဆွဲနိုင်ပါ", state="error")
                 st.error(str(ex)[:900])
-                
+
     lp = st.session_state.get("link_path")
     if lp and os.path.exists(lp):
         vid_path = lp
@@ -1016,21 +1043,20 @@ else: # Link Mode
 
 if vid_path:
     try:
-        pv = make_preview(vid_path, height, "စာတန်းထိုး နမူနာ စာသား", font_path,
-                          sub_size, sub_pos, use_neon, neon_th, neon_speed, flip, zoom, sub_style)
+        pv = make_preview(vid_path, size, "စာတန်းထိုး နမူနာ စာသား", font_path,
+                          sub_size, sub_pos, use_neon, neon_th, neon_speed, flip, zoom, sub_style, fit)
         if pv is not None:
-            st.image(pv, caption="🔍 Preview", use_container_width=True)
+            st.image(pv, caption=f"🔍 Preview · {ratio}", use_container_width=True)
     except Exception as ex:
         st.caption(f"preview မရ: {str(ex)[:100]}")
 
 
 # ====================================================================
-# STEP 2: Transcribe (ဒီအပိုင်းမှာ ၁၃ မိနစ်ကျော်ရင် ဖြတ်တဲ့စနစ် ထည့်ထားပါတယ်)
+# STEP 2: Transcribe
 # ====================================================================
 section(2, "စာသားထုတ်")
 if st.button("🎧 စာသားထုတ်", type="primary", disabled=not vid_path, use_container_width=True):
     reset_job()
-    st.session_state.pop("cleaned", None)
     wd = tempfile.mkdtemp(prefix="recap_")
     st.session_state["wd"] = wd
     src = os.path.join(wd, "src.mp4")
@@ -1038,111 +1064,51 @@ if st.button("🎧 စာသားထုတ်", type="primary", disabled=not vi
 
     try:
         vdur = dur(src)
-        if vdur > max_min * 60:
-            st.error(f"Video က {vdur/60:.1f} မိနစ် · ကန့်သတ် {max_min} မိနစ်")
-            st.stop()
         st.session_state["vdur"] = vdur
 
         T1 = {}
-        
-        # ၁၃ မိနစ် (၇၈၀ စက္ကန့်) ကျော်ရင် အပိုင်းလိုက် ဖြတ်မယ်
-        if vdur > 780: 
-            st.info("⏳ ဗီဒီယိုက ၁၃ မိနစ်ကျော်နေလို့ ၅ မိနစ်စီ ဖြတ်ပြီး အဆင့်ဆင့် လုပ်ပါမယ်။")
-            chunk_dir = os.path.join(wd, "chunks")
-            os.makedirs(chunk_dir, exist_ok=True)
-            # ၅ မိနစ် = ၃၀၀ စက္ကန့်
-            split_video_ffmpeg(src, os.path.join(chunk_dir, "part_%03d.mp4"), chunk_seconds=300)
-            
-            chunk_files = sorted(glob.glob(os.path.join(chunk_dir, "part_*.mp4")))
-            all_raw_segments = []
-            
-            with st.status(f"🎧 Whisper (အပိုင်း {len(chunk_files)} ခု)...", expanded=True) as stt:
-                t_a = time.time()
-                wm = load_whisper(wsize)
-                T1["📦 Model"] = time.time() - t_a
-                
-                bar = st.progress(0.0)
-                for idx, chunk_file in enumerate(chunk_files):
-                    st.write(f"🔄 အပိုင်း {idx+1}/{len(chunk_files)} ကို စာသားပြောင်းနေတယ်...")
-                    
-                    # အပိုင်းတစ်ခုချင်းစီအတွက် အသံထုတ်မယ်
-                    wav = os.path.join(wd, f"audio16k_{idx}.wav")
-                    sh(["ffmpeg", "-y", "-i", chunk_file, "-vn", "-ac", "1", "-ar", "16000", wav])
-                    
-                    with wave.open(wav) as wf:
-                        audio = np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
-                    
-                    # Whisper run မယ်
-                    segs, info = wm.transcribe(audio, language=None if src_lang == "auto" else src_lang, vad_filter=True, beam_size=1, condition_on_previous_text=False)
-                    
-                    # အပိုင်းတစ်ခုစီရဲ့ အစ (offset) ကို တွက်မယ်
-                    chunk_offset = idx * 300.0 # ၅ မိနစ် = ၃၀၀ စက္ကန့်
-                    
-                    for s in segs:
-                        if s.text.strip():
-                            # မူလဗီဒီယိုရဲ့ အချိန်အမှန်ကို ပြန်တွက်မယ်
-                            real_start = s.start + chunk_offset
-                            real_end = s.end + chunk_offset
-                            all_raw_segments.append((real_start, real_end, s.text.strip()))
-                    
-                    bar.progress((idx + 1) / len(chunk_files))
-                    
-                T1["🎧 Whisper"] = time.time() - t_a
-                
-                # ရလာတဲ့ segments တွေကို ပေါင်းမယ်
-                units = []
-                for s, e, t in all_raw_segments:
-                    if units and (units[-1][1] - units[-1][0]) < TARGET and (e - units[-1][0]) <= MAXD:
-                        units[-1] = (units[-1][0], e, units[-1][2] + " " + t)
-                    else:
-                        units.append((s, e, t))
-                
-                if not units:
-                    stt.update(label="စကားပြောသံ မတွေ့ပါ", state="error")
-                    st.stop()
-                stt.update(label=f"✅ {len(units)} ပိုင်း · {fmt_t(sum(T1.values()))}", state="complete")
-                st.session_state["t1"] = T1
-        
-        else:
-            # ပုံမှန်အတိုင်း (၁၃ မိနစ်အောက်) လုပ်မယ်
-            with st.status("🎧 Whisper...", expanded=True) as stt:
-                t_a = time.time()
-                wav = os.path.join(wd, "audio16k.wav")
-                sh(["ffmpeg", "-y", "-i", src, "-vn", "-ac", "1", "-ar", "16000", wav])
-                with wave.open(wav) as wf:
-                    audio = np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
-                T1["🎞️ Audio"] = time.time() - t_a
-                t_a = time.time()
-                wm = load_whisper(wsize)
-                T1["📦 Model"] = time.time() - t_a
-                t_a = time.time()
-                segs, info = wm.transcribe(audio, language=None if src_lang == "auto" else src_lang, vad_filter=True, beam_size=1, condition_on_previous_text=False)
-                st.write(f"🌐 {info.language} ({info.language_probability:.0%})")
-                bar = st.progress(0.0)
-                raw = []
-                for s in segs:
-                    if s.text.strip():
-                        raw.append((s.start, s.end, s.text.strip()))
-                    bar.progress(min(s.end / vdur, 1.0))
-                T1["🎧 Whisper"] = time.time() - t_a
-                units = []
-                for s, e, t in raw:
-                    if units and (units[-1][1] - units[-1][0]) < TARGET and (e - units[-1][0]) <= MAXD:
-                        units[-1] = (units[-1][0], e, units[-1][2] + " " + t)
-                    else:
-                        units.append((s, e, t))
-                if not units:
-                    stt.update(label="စကားပြောသံ မတွေ့ပါ", state="error")
-                    st.stop()
-                stt.update(label=f"✅ {len(units)} ပိုင်း · {fmt_t(sum(T1.values()))}", state="complete")
-                st.session_state["t1"] = T1
+        with st.status("🎧 Whisper...", expanded=True) as stt:
+            t_a = time.time()
+            wav = os.path.join(wd, "audio16k.wav")
+            sh(["ffmpeg", "-y", "-i", src, "-vn", "-ac", "1", "-ar", "16000", wav])
+            with wave.open(wav) as wf:
+                audio = np.frombuffer(
+                    wf.readframes(wf.getnframes()), dtype=np.int16
+                ).astype(np.float32) / 32768.0
+            T1["🎞️ Audio"] = time.time() - t_a
+            t_a = time.time()
+            wm = load_whisper(WSIZE)
+            T1["📦 Model"] = time.time() - t_a
+            t_a = time.time()
+            segs, info = wm.transcribe(
+                audio, language=None if src_lang == "auto" else src_lang,
+                vad_filter=True, beam_size=1, condition_on_previous_text=False)
+            st.write(f"🌐 {info.language} ({info.language_probability:.0%})")
+            bar = st.progress(0.0)
+            raw = []
+            for s in segs:
+                if s.text.strip():
+                    raw.append((s.start, s.end, s.text.strip()))
+                bar.progress(min(s.end / vdur, 1.0))
+            T1["🎧 Whisper"] = time.time() - t_a
+            units = []
+            for s, e, t in raw:
+                if units and (units[-1][1] - units[-1][0]) < TARGET and (e - units[-1][0]) <= MAXD:
+                    units[-1] = (units[-1][0], e, units[-1][2] + " " + t)
+                else:
+                    units.append((s, e, t))
+            if not units:
+                stt.update(label="စကားပြောသံ မတွေ့ပါ", state="error")
+                st.stop()
+            stt.update(label=f"✅ {len(units)} ပိုင်း · {fmt_t(sum(T1.values()))}", state="complete")
+            st.session_state["t1"] = T1
 
         st.session_state["units"] = [
             {"start": units[i][0], "end": units[i][1], "src": units[i][2], "my": ""}
             for i in range(len(units))
         ]
+        st.session_state["parts"] = make_parts(st.session_state["units"], vdur)
         st.session_state["manual"] = True
-        st.session_state["ver"] = st.session_state.get("ver", 0) + 1
     except Exception as ex:
         st.error(f"Error: {ex}")
 
@@ -1152,28 +1118,33 @@ if st.button("🎧 စာသားထုတ်", type="primary", disabled=not vi
 # ====================================================================
 if st.session_state.get("units"):
     units = st.session_state["units"]
+    parts = st.session_state.get("parts") or [(0, len(units))]
     if st.session_state.get("t1"):
         st.caption("⏱️ " + " · ".join(f"{k} {fmt_t(v)}" for k, v in st.session_state["t1"].items()))
 
     section(3, "ဘာသာပြန် (Gemini)")
-    if st.session_state.get("manual"):
-        st.caption("① အောက်က စာသား Copy → ② Gemini app မှာ paste → ③ ရလဒ် အောက်ကွက်ထဲ paste → ④ Apply")
-        st.code(build_prompt(units), language=None)
-        pasted = st.text_area("📥 Gemini ရလဒ်", height=160, key="gem_paste",
-                              placeholder="[0] မြန်မာစာ...\n[1] မြန်မာစာ...",
-                              label_visibility="collapsed")
-        if st.button("✅ Apply", use_container_width=True):
-            got = parse_numbered(pasted, len(units))
-            for i, t in got.items():
-                units[i]["my"] = clean_my(t)
-            missing = [i for i in range(len(units)) if not units[i]["my"]]
-            st.session_state["apply_msg"] = (
-                f"ဖြည့်ပြီး {len(got)}/{len(units)}"
-                + (f" · မပါ: {missing[:15]}" if missing else " ✅"))
-            st.session_state["ver"] = st.session_state.get("ver", 0) + 1
-            st.rerun()
-        if st.session_state.get("apply_msg"):
-            st.info(st.session_state["apply_msg"])
+    if len(parts) > 1:
+        st.info(f"Video ရှည်လို့ {len(parts)} ပိုင်း ခွဲထားတယ် (တစ်ပိုင်း ~5 မိနစ်)")
+    for k, (a, b) in enumerate(parts):
+        sub = units[a:b]
+        label = f"Part {k+1}/{len(parts)} · {fmt_t(sub[-1]['end'] - sub[0]['start'])} · {len(sub)} ကြောင်း"
+        with st.expander(label, expanded=(k == 0)):
+            st.caption("① Copy → ② Gemini မှာ paste → ③ ရလဒ်ကို အောက်မှာ paste → ④ Apply")
+            st.code(build_prompt(sub), language=None)
+            pasted = st.text_area("📥 Gemini ရလဒ်", height=160, key=f"gem_paste_{k}",
+                                  placeholder="[0] မြန်မာစာ...\n[1] မြန်မာစာ...",
+                                  label_visibility="collapsed")
+            if st.button("✅ Apply", key=f"apply_{k}", use_container_width=True):
+                got = parse_numbered(pasted, len(sub))
+                for i, t in got.items():
+                    units[a + i]["my"] = clean_my(t)
+                missing = [i for i in range(len(sub)) if not units[a + i]["my"]]
+                st.session_state[f"apply_msg_{k}"] = (
+                    f"ဖြည့်ပြီး {len(got)}/{len(sub)}"
+                    + (f" · မပါ: {missing[:15]}" if missing else " ✅"))
+                st.rerun()
+            if st.session_state.get(f"apply_msg_{k}"):
+                st.info(st.session_state[f"apply_msg_{k}"])
 
     section(4, "Video ဖန်တီး")
     if st.button("🚀 အသံထုတ် + Video ပေါင်း", type="primary", use_container_width=True):
@@ -1183,10 +1154,10 @@ if st.session_state.get("units"):
         n = len(units)
         empty = [i for i, t in enumerate(my_list) if not t.strip()]
         if empty:
-            st.error(f"မဖြည့်ရသေးတဲ့ စာကြောင်း: {empty[:20]}")
+            st.error(f"မဖြည့်ရသေးတဲ့ စာကြောင်း (global #): {empty[:20]}")
             st.stop()
         try:
-            T = {}
+            T = {"🔊 TTS": 0.0, "🔗 အသံပေါင်း": 0.0, "🎬 Render": 0.0}
             t_all = time.time()
 
             vox = None
@@ -1220,99 +1191,120 @@ if st.session_state.get("units"):
                 sh(["ffmpeg", "-y", "-i", raw_audio, "-af", TRIM, "-ar", "44100", "-ac", "1", wav])
                 return i, wav_dur(wav), bool(used)
 
-            durs = [0.0] * n
-            vox_ok = 0
-            workers = 1 if vox is not None else tts_workers
-            t_a = time.time()
-            with st.status("🔊 TTS...", expanded=True) as tst:
-                bar = st.progress(0.0)
-                done = 0
-                with ThreadPoolExecutor(max_workers=workers) as pool:
-                    futs = [pool.submit(do_line, i) for i in range(n)]
-                    try:
-                        for fu in as_completed(futs):
-                            i_, d_, u_ = fu.result()
-                            durs[i_] = d_
-                            vox_ok += 1 if u_ else 0
-                            done += 1
-                            bar.progress(done / n)
-                    except Exception:
-                        for f_ in futs:
-                            f_.cancel()
-                        raise
-                T["🔊 TTS"] = time.time() - t_a
-                msg = f"✅ TTS · {fmt_t(T['🔊 TTS'])}"
-                if vox is not None:
-                    msg += f" (VoxCPM {vox_ok}/{n})"
-                    if vox_ok < n and vox.last_err:
-                        st.caption(f"Vox: {vox.last_err}")
-                tst.update(label=msg, state="complete")
-
-            t_a = time.time()
-            lst = f"{wd}/alist.txt"
-            with open(lst, "w") as f:
-                for i in range(n):
-                    f.write(f"file '{wd}/a{i:04d}.wav'\n")
-            allwav = f"{wd}/all.wav"
-            sh(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", allwav])
-            T["🔗 အသံပေါင်း"] = time.time() - t_a
-
             bounds = [0.0] + [(units[i]["end"] + units[i + 1]["start"]) / 2
                               for i in range(n - 1)] + [vdur]
-            plan, cum = [], 0.0
-            for i in range(n):
-                s_, e_ = bounds[i], bounds[i + 1]
-                w = max(e_ - s_, 0.2)
-                d = max(durs[i], 0.05)
-                w_use = d * max_speed if w / d > max_speed else w
-                plan.append((cum, d, s_, w_use / d))
-                cum += d
+            workers = 1 if vox is not None else tts_workers
+            results = []
 
-            subs, t0 = [], 0.0
-            if use_sub:
-                for i in range(n):
-                    parts = split_for_sub(my_list[i])
-                    tot = sum(len(p) for p in parts) or 1
-                    cur = t0
-                    for p in parts:
-                        dd = durs[i] * len(p) / tot
-                        subs.append((cur, cur + dd, p))
-                        cur += dd
-                    t0 += durs[i]
+            for k, (a, b) in enumerate(parts):
+                tag = f"Part {k+1}/{len(parts)}"
+                durs = {}
+                vox_ok = 0
 
-            t_a = time.time()
-            with st.status("🎬 Render...", expanded=True) as rst:
-                bar = st.progress(0.0)
-                final = f"{wd}/final.mp4"
-                render_final(src, allwav, final, plan, cum, height, subs,
-                             font_path if use_sub else None, sub_size, sub_pos,
-                             use_neon, neon_th, neon_speed, flip, zoom, sub_style,
-                             preset=preset, progress=bar)
-                T["🎬 Render"] = time.time() - t_a
-                rst.update(label=f"✅ {cum:.1f}s · {fmt_t(T['🎬 Render'])}", state="complete")
+                # ---- TTS
+                t_a = time.time()
+                with st.status(f"🔊 {tag} TTS...", expanded=True) as tst:
+                    bar = st.progress(0.0)
+                    done = 0
+                    with ThreadPoolExecutor(max_workers=workers) as pool:
+                        futs = [pool.submit(do_line, i) for i in range(a, b)]
+                        try:
+                            for fu in as_completed(futs):
+                                i_, d_, u_ = fu.result()
+                                durs[i_] = d_
+                                vox_ok += 1 if u_ else 0
+                                done += 1
+                                bar.progress(done / (b - a))
+                        except Exception:
+                            for f_ in futs:
+                                f_.cancel()
+                            raise
+                    T["🔊 TTS"] += time.time() - t_a
+                    msg = f"✅ {tag} TTS"
+                    if vox is not None:
+                        msg += f" (VoxCPM {vox_ok}/{b - a})"
+                        if vox_ok < (b - a) and vox.last_err:
+                            st.caption(f"Vox: {vox.last_err}")
+                    tst.update(label=msg, state="complete")
+
+                # ---- concat audio
+                t_a = time.time()
+                lst = f"{wd}/alist{k}.txt"
+                with open(lst, "w") as f:
+                    for i in range(a, b):
+                        f.write(f"file '{wd}/a{i:04d}.wav'\n")
+                allwav = f"{wd}/all{k}.wav"
+                sh(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", allwav])
+                T["🔗 အသံပေါင်း"] += time.time() - t_a
+
+                # ---- plan (source time တွေက global၊ output time က part အလိုက် 0 ကစ)
+                plan, cum = [], 0.0
+                for i in range(a, b):
+                    s_, e_ = bounds[i], bounds[i + 1]
+                    w = max(e_ - s_, 0.2)
+                    d = max(durs[i], 0.05)
+                    w_use = d * max_speed if w / d > max_speed else w
+                    plan.append((cum, d, s_, w_use / d))
+                    cum += d
+
+                subs, t0 = [], 0.0
+                if use_sub:
+                    for i in range(a, b):
+                        sp = split_for_sub(my_list[i])
+                        tot = sum(len(p) for p in sp) or 1
+                        cur = t0
+                        for p in sp:
+                            dd = durs[i] * len(p) / tot
+                            subs.append((cur, cur + dd, p))
+                            cur += dd
+                        t0 += durs[i]
+
+                # ---- render
+                t_a = time.time()
+                with st.status(f"🎬 {tag} Render...", expanded=True) as rst:
+                    bar = st.progress(0.0)
+                    final = f"{wd}/final{k}.mp4"
+                    render_final(src, allwav, final, plan, cum, size, subs,
+                                 font_path if use_sub else None, sub_size, sub_pos,
+                                 use_neon, neon_th, neon_speed, flip, zoom, sub_style,
+                                 preset=preset, progress=bar, fit=fit)
+                    T["🎬 Render"] += time.time() - t_a
+                    rst.update(label=f"✅ {tag} · {cum:.1f}s", state="complete")
+
+                name = f"final_myanmar_part{k+1}.mp4" if len(parts) > 1 else "final_myanmar.mp4"
+                results.append((name, final))
+
+                # disk သက်သာအောင် part ရဲ့ အသံဖိုင်တွေ ဖျက်
+                for i in range(a, b):
+                    for ext in (".wav", "_raw.wav", "_raw.mp3"):
+                        try:
+                            os.remove(f"{wd}/a{i:04d}{ext}")
+                        except OSError:
+                            pass
+                try:
+                    os.remove(allwav)
+                except OSError:
+                    pass
+
             T["⏱️ စုစုပေါင်း"] = time.time() - t_all
             st.session_state["t2"] = T
-
-            with open(final, "rb") as f:
-                st.session_state["result"] = f.read()
+            st.session_state["result"] = results
         except Exception as ex:
             st.error(f"Error: {ex}")
 
 # ---- Result
-if st.session_state.get("result"):
-    mb = len(st.session_state["result"]) / 1e6
+res = st.session_state.get("result")
+if res:
+    tot_mb = sum(os.path.getsize(p) for _, p in res if os.path.exists(p)) / 1e6
     st.markdown(
         f"""
         <div class="result-card">
             <div class="title">✅ ရလဒ် အသင့်</div>
-            <div class="meta">📦 {mb:.1f} MB</div>
+            <div class="meta">📦 {len(res)} ပိုင်း · {tot_mb:.1f} MB</div>
         </div>
         """,
         unsafe_allow_html=True,
     )
-
-    if st.toggle("▶️ Video ကြည့်", value=False, key="show_vid"):
-        st.video(st.session_state["result"])
 
     _tt = {}
     _tt.update(st.session_state.get("t1") or {})
@@ -1320,15 +1312,17 @@ if st.session_state.get("result"):
     if _tt:
         st.markdown(timing_html(_tt), unsafe_allow_html=True)
 
-    st.download_button("⬇️ Download", st.session_state["result"],
-                       file_name="final_myanmar.mp4", mime="video/mp4",
-                       use_container_width=True, on_click=cleanup_after_download)
+    for k, (name, p) in enumerate(res):
+        if not os.path.exists(p):
+            continue
+        if st.toggle(f"▶️ {name} ကြည့်", value=False, key=f"show_vid_{k}"):
+            st.video(p)
+        with open(p, "rb") as f:
+            st.download_button(f"⬇️ {name}", f, file_name=name, mime="video/mp4",
+                               use_container_width=True, key=f"dl_{k}")
 
-    if st.session_state.get("cleaned"):
-        st.caption("🧹 ဖျက်ပြီးပါပြီ")
-
+    st.caption("ဒေါင်းပြီးမှ အောက်က ခလုတ်နှိပ်ပါ (ဖိုင်အားလုံး ဖျက်မယ်)")
     if st.button("🗑️ အသစ်ပြန်စ", use_container_width=True):
         reset_job()
         cleanup_uploads()
-        st.session_state.pop("cleaned", None)
         st.rerun()
