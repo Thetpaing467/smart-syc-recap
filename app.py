@@ -8,21 +8,20 @@ import asyncio
 import shutil
 import hashlib
 import subprocess
+import queue
 import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 import cv2
 import numpy as np
-import pandas as pd
 import streamlit as st
 from PIL import Image, ImageDraw, ImageFont, features
 
 st.set_page_config(page_title="Recap → Myanmar", page_icon="🎙️", layout="centered")
 
-DEFAULT_MODELS = (
-    "gemini-3.5-flash, gemini-3.5-flash-lite, gemini-3.6-flash, "
-    "gemini-3.7-flash, gemini-3.1-flash-lite"
-)
-TARGET, MAXD, BATCH = 4.2, 5.6, 40
+TARGET, MAXD = 4.2, 5.6
 
 VOX_SPACES = [
     {"space": "openbmb/VoxCPM-Demo", "type": "demo"},
@@ -59,6 +58,21 @@ def dur(path):
     )
 
 
+def fmt_t(sec):
+    sec = float(sec)
+    return f"{sec:.1f} စက္ကန့်" if sec < 60 else f"{int(sec // 60)} မိနစ် {sec % 60:.0f} စက္ကန့်"
+
+
+def wav_dur(path):
+    with wave.open(path) as w:
+        return w.getnframes() / float(w.getframerate())
+
+
+def timing_table(d):
+    rows = "\n".join(f"| {k} | **{fmt_t(v)}** |" for k, v in d.items())
+    return "| အဆင့် | ကြာချိန် |\n|---|---|\n" + rows
+
+
 def clean_my(text):
     """မြန်မာစာ၊ ဂဏန်း၊ ပုဒ်ဖြတ်သာ ကျန်ခဲ့"""
     return re.sub(
@@ -69,28 +83,8 @@ def clean_my(text):
 @st.cache_resource(show_spinner="Whisper model ကို ဖွင့်နေတယ် (ပထမအကြိမ် download လုပ်မယ်)...")
 def load_whisper(size):
     from faster_whisper import WhisperModel
-    return WhisperModel(size, device="cpu", compute_type="int8")
-
-
-def make_gen(api_key, models):
-    from google import genai
-    client = genai.Client(api_key=api_key)
-
-    def gen(prompt, json_out=True):
-        last = None
-        for attempt in range(3):
-            for m in models:
-                try:
-                    cfg = {"response_mime_type": "application/json"} if json_out else None
-                    r = client.models.generate_content(model=m, contents=prompt, config=cfg)
-                    if r.text:
-                        return r.text
-                except Exception as ex:  # noqa: BLE001
-                    last = ex
-            time.sleep(4 * (attempt + 1))
-        raise RuntimeError(f"Gemini failed: {last}")
-
-    return gen
+    return WhisperModel(size, device="cpu", compute_type="int8",
+                        cpu_threads=os.cpu_count() or 4)
 
 
 # ====================================================================
@@ -117,7 +111,7 @@ def _gclient(space, token):
 
 
 class VoxEngine:
-    """VoxCPM Space များကို အစဉ်လိုက် စမ်းမယ်။ မရရင် None ပြန် (Edge TTS ကို ခေါ်ရန်)။"""
+    """VoxCPM Space များကို အစဉ်လိုက် စမ်းမယ်။ မရရင် None ပြန် (Edge TTS ကို မခေါ်တော့ - caller က retry/error ပြမယ်)။"""
 
     def __init__(self, ref_path=None, token=None):
         self.ref = ref_path
@@ -127,6 +121,14 @@ class VoxEngine:
         self.dead = set()
         self.active = None
         self.last_err = ""
+        self.lock = threading.Lock()
+
+    def reset(self):
+        """Space အားလုံးကို ပြန်စမ်းခွင့်ပေး"""
+        with self.lock:
+            self.dead.clear()
+            self.fails = {i: 0 for i in range(len(VOX_SPACES))}
+            self.clients = {}
 
     def synth(self, text, out_wav):
         from gradio_client import handle_file
@@ -138,6 +140,7 @@ class VoxEngine:
             sp = VOX_SPACES[i]
             if sp["type"] == "burmese" and not self.ref:
                 self.dead.add(i)          # reference audio မပါရင် ဒီ space မသုံးနိုင်
+                self.last_err = f"{sp['space']}: reference audio လိုအပ်တယ်"
                 continue
             try:
                 cl = self.clients.get(i)
@@ -372,30 +375,83 @@ def zoom_flip(fr, zoom, flip):
     return np.ascontiguousarray(fr)
 
 
-def overlay_pass(src, out, subs, font_path, fs_pct, pos_y, neon_on, neon_th,
-                 neon_speed, flip, zoom, style=None, progress=None):
-    """Smart-Sync video ကို frame တစ်ခုချင်းဖတ်ပြီး neon + PNG subtitle ထည့်၊ audio ပြန်ပေါင်း"""
+def render_final(src, audio, out, plan, total, height, subs, font_path, fs_pct, pos_y,
+                 neon_on, neon_th, neon_speed, flip, zoom, style=None, preset="ultrafast",
+                 progress=None, fps_out=30):
+    """Single pass: source frame တစ်ခါဖတ် → smart-sync retime + zoom/flip + neon + စာတန်း → encode တစ်ခါ။
+    decode thread / python processing / ffmpeg encode သုံးခု တစ်ပြိုင်နက် အလုပ်လုပ်။"""
     style = style or {}
     cap = cv2.VideoCapture(src)
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-    W, H = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
+    sfps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    w0, h0 = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    stotal = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 10 ** 9
+    H = int(height)
+    W = int(round(w0 * H / h0 / 2) * 2)
+    nfr = max(1, int(round(total * fps_out)))
     fs = max(16, int(W * fs_pct / 100))
     neon = Neon(W, H, neon_th, neon_speed) if neon_on else None
 
+    q = queue.Queue(maxsize=24)
+    stop = threading.Event()
+
+    def put(x):
+        while not stop.is_set():
+            try:
+                q.put(x, timeout=0.5)
+                return
+            except queue.Full:
+                continue
+
+    def producer():
+        cur, last, ui = -1, None, 0
+        try:
+            for j in range(nfr):
+                if stop.is_set():
+                    return
+                T = j / fps_out
+                while ui < len(plan) - 1 and T >= plan[ui + 1][0]:
+                    ui += 1
+                cs, _d, s0, spd = plan[ui]
+                idx = min(int((s0 + (T - cs) * spd) * sfps + 0.5), stotal - 1)
+                if idx > cur + 90:                      # ကြီးကြီးကျော်ရင် seek
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+                    cur = idx - 1
+                new = False
+                while cur < idx:
+                    if not cap.grab():
+                        break
+                    cur += 1
+                    new = True
+                if new:
+                    ok, f = cap.retrieve()
+                    if ok:
+                        if f.shape[1] != W or f.shape[0] != H:
+                            f = cv2.resize(f, (W, H))
+                        last = f
+                if last is None:
+                    return
+                put(last.copy())
+        finally:
+            put(None)
+
+    log_path = out + ".log"
+    log = open(log_path, "wb")
     cmd = ["ffmpeg", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{W}x{H}",
-           "-r", f"{fps}", "-i", "-", "-i", src, "-map", "0:v", "-map", "1:a:0",
-           "-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p",
-           "-c:a", "copy", "-shortest", out]
-    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+           "-r", str(fps_out), "-i", "-", "-i", audio, "-map", "0:v", "-map", "1:a:0",
+           "-c:v", "libx264", "-preset", preset, "-crf", "27", "-pix_fmt", "yuv420p",
+           "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart",
+           "-t", f"{total:.3f}", out]
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=log)
+    th = threading.Thread(target=producer, daemon=True)
+    th.start()
+
     k, cur_k, cur_ov, j = 0, -1, None, 0
     try:
         while True:
-            ok, fr = cap.read()
-            if not ok:
+            fr = q.get()
+            if fr is None:
                 break
-            t = j / fps
+            t = j / fps_out
             fr = zoom_flip(fr, zoom, flip)
             if neon:
                 neon.apply(fr, t)
@@ -410,17 +466,29 @@ def overlay_pass(src, out, subs, font_path, fs_pct, pos_y, neon_on, neon_th,
                         blend_overlay(fr, cur_ov)
             proc.stdin.write(fr.tobytes())
             j += 1
-            if progress and j % 15 == 0:
-                progress.progress(min(j / total, 1.0))
+            if progress and j % 30 == 0:
+                progress.progress(min(j / nfr, 1.0))
+    except BrokenPipeError:
+        pass
     finally:
+        stop.set()
+        try:
+            while True:
+                q.get_nowait()
+        except queue.Empty:
+            pass
+        th.join(timeout=5)
         cap.release()
         try:
             proc.stdin.close()
         except Exception:  # noqa: BLE001
             pass
         proc.wait()
+        log.close()
     if proc.returncode != 0:
-        raise RuntimeError("overlay render: ffmpeg fail")
+        with open(log_path, "rb") as f:
+            tail = f.read()[-800:].decode("utf-8", "ignore")
+        raise RuntimeError("render: ffmpeg fail\n" + tail)
     if progress:
         progress.progress(1.0)
     return out
@@ -488,11 +556,35 @@ def reset_job():
     wd = st.session_state.get("wd")
     if wd and os.path.isdir(wd):
         shutil.rmtree(wd, ignore_errors=True)
-    for k in ("wd", "units", "vdur", "result", "manual", "apply_msg", "gem_paste"):
+    for k in ("wd", "units", "vdur", "result", "manual", "apply_msg", "gem_paste", "t1", "t2"):
         try:
             st.session_state.pop(k, None)
         except Exception:  # noqa: BLE001
             pass
+
+
+def cleanup_uploads():
+    """တင်ထားတဲ့ video file တွေ ဖျက် + uploader ကို reset (VoxCPM reference audio ကို မထိ)"""
+    for p in st.session_state.get("up_paths", []):
+        try:
+            os.remove(p)
+        except Exception:  # noqa: BLE001
+            pass
+    st.session_state["up_paths"] = []
+    st.session_state.pop("link_path", None)
+    st.session_state.pop("link_src", None)
+    st.session_state["up_key"] = st.session_state.get("up_key", 0) + 1
+
+
+def cleanup_after_download():
+    """Download နှိပ်ပြီးတာနဲ့: script + uploaded video + work files ဖျက်။ (ရလဒ် video ကို download အတွက် ချန်)"""
+    wd = st.session_state.get("wd")
+    if wd and os.path.isdir(wd):
+        shutil.rmtree(wd, ignore_errors=True)
+    for k in ("wd", "units", "vdur", "manual", "apply_msg", "gem_paste"):
+        st.session_state.pop(k, None)
+    cleanup_uploads()
+    st.session_state["cleaned"] = True
 
 
 def save_upload(up):
@@ -502,7 +594,154 @@ def save_upload(up):
     if not os.path.exists(path):
         with open(path, "wb") as f:
             f.write(up.getbuffer())
+    paths = st.session_state.setdefault("up_paths", [])
+    if path not in paths:
+        paths.append(path)
     return path
+
+
+# ====================================================================
+# Link download (direct / Google Drive / Dropbox / YouTube ... yt-dlp ထောက်ပံ့တဲ့ site အားလုံး)
+# ====================================================================
+VIDEO_EXT = (".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi", ".ts", ".flv")
+
+
+def _fix_dropbox(url):
+    u = urlparse(url)
+    q = parse_qs(u.query)
+    q["dl"] = ["1"]
+    return urlunparse(u._replace(query=urlencode(q, doseq=True)))
+
+
+def _dl_direct(url, out, bar=None):
+    import requests
+    with requests.get(url, stream=True, timeout=30, allow_redirects=True,
+                      headers={"User-Agent": "Mozilla/5.0"}) as r:
+        r.raise_for_status()
+        ctype = r.headers.get("content-type", "").lower()
+        if "text/html" in ctype:
+            raise RuntimeError("Link က video ဖိုင် မဟုတ်ဘဲ web page ဖြစ်နေတယ်")
+        total = int(r.headers.get("content-length") or 0)
+        got = 0
+        with open(out, "wb") as f:
+            for chunk in r.iter_content(1 << 20):
+                f.write(chunk)
+                got += len(chunk)
+                if bar is not None and total:
+                    bar.progress(min(got / total, 1.0))
+    if not os.path.exists(out) or os.path.getsize(out) < 1024:
+        raise RuntimeError("ဖိုင် မရပါ")
+    return out
+
+
+def _dl_gdrive(url, out):
+    import gdown
+    gdown.download(url, out, quiet=True, fuzzy=True)
+    if not os.path.exists(out) or os.path.getsize(out) < 1024:
+        raise RuntimeError("Google Drive ဖိုင် မရပါ (Share ကို 'Anyone with the link' ထားပါ)")
+    return out
+
+
+def _dl_ytdlp(url, out_noext, height, bar=None, cookies_text=None):
+    import yt_dlp
+
+    def hook(d):
+        if bar is not None and d.get("status") == "downloading":
+            tot = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+            if tot:
+                bar.progress(min(d.get("downloaded_bytes", 0) / tot, 1.0))
+
+    opts = {
+        "format": f"bv*[height<={height}]+ba/b[height<={height}]/bv*+ba/b",
+        "outtmpl": out_noext + ".%(ext)s",
+        "merge_output_format": "mp4",
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "retries": 5,
+        "fragment_retries": 5,
+        "concurrent_fragment_downloads": 4,
+        "progress_hooks": [hook],
+    }
+    if cookies_text:
+        cf = out_noext + "_cookies.txt"
+        with open(cf, "w") as f:
+            f.write(cookies_text)
+        opts["cookiefile"] = cf
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        ydl.download([url])
+    files = [p for p in glob.glob(out_noext + ".*")
+             if not p.endswith((".part", ".ytdl", "_cookies.txt"))]
+    if not files:
+        raise RuntimeError("yt-dlp ဖိုင် မထွက်ပါ")
+    return max(files, key=os.path.getsize)
+
+
+def _ensure_mp4(raw, final, height):
+    """h264 mp4 ဖြစ်အောင် လုပ် (cv2 ဖတ်နိုင်ဖို့)။ h264 ဆိုရင် copy၊ မဟုတ်ရင် re-encode"""
+    try:
+        codec = sh(["ffprobe", "-v", "error", "-select_streams", "v:0",
+                    "-show_entries", "stream=codec_name", "-of", "csv=p=0", raw]).strip()
+    except Exception:  # noqa: BLE001
+        codec = ""
+    if not codec:
+        raise RuntimeError("Video stream မတွေ့ပါ (ဖိုင်က video မဟုတ်နိုင်)")
+    if codec == "h264":
+        try:
+            sh(["ffmpeg", "-y", "-i", raw, "-c", "copy", "-movflags", "+faststart", final])
+            return final
+        except Exception:  # noqa: BLE001
+            pass
+    sh(["ffmpeg", "-y", "-i", raw, "-vf", f"scale=-2:'min(ih,{int(height)})'",
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "26", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", final])
+    return final
+
+
+def fetch_link(url, height, bar=None, cookies_text=None):
+    url = url.strip()
+    if not re.match(r"^https?://", url, re.I):
+        raise ValueError("Link က http:// ဒါမှမဟုတ် https:// နဲ့ စရမယ်")
+    key = hashlib.md5(url.encode()).hexdigest()[:12]
+    final = f"/tmp/recap_up_{key}.mp4"
+    if os.path.exists(final) and os.path.getsize(final) > 1024:
+        return final
+    work = tempfile.mkdtemp(prefix="dl_")
+    try:
+        u = urlparse(url)
+        host, path_l = u.netloc.lower(), u.path.lower()
+        raw, errs = None, []
+        if "drive.google.com" in host or "docs.google.com" in host:
+            raw = os.path.join(work, "gd.bin")
+            _dl_gdrive(url, raw)
+        else:
+            if "dropbox.com" in host:
+                url = _fix_dropbox(url)
+                methods = ["direct", "ytdlp"]
+            elif path_l.endswith(VIDEO_EXT):
+                methods = ["direct", "ytdlp"]
+            else:
+                methods = ["ytdlp", "direct"]
+            for m in methods:
+                try:
+                    if bar is not None:
+                        bar.progress(0.0)
+                    if m == "direct":
+                        raw = _dl_direct(url, os.path.join(work, "direct.bin"), bar)
+                    else:
+                        raw = _dl_ytdlp(url, os.path.join(work, "yt"), height, bar, cookies_text)
+                    break
+                except Exception as ex:  # noqa: BLE001
+                    errs.append(f"{m}: {str(ex)[:200]}")
+                    raw = None
+            if not raw:
+                raise RuntimeError("Link ကနေ မဆွဲနိုင်ပါ\n" + "\n".join(errs))
+        if bar is not None:
+            bar.progress(1.0)
+        _ensure_mp4(raw, final, height)
+        return final
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
 
 
 # ====================================================================
@@ -512,15 +751,6 @@ st.title("🎙️ Recap → Myanmar")
 st.caption("Whisper → Gemini → Edge TTS / VoxCPM → Smart Sync → PNG စာတန်း + Neon border")
 
 with st.expander("⚙️ Settings", expanded=False):
-    mode = st.radio(
-        "ဘာသာပြန်နည်း",
-        ["✋ Manual (Gemini app မှာ copy-paste · key မလို)", "🤖 Auto (Gemini API key)"],
-        index=1 if secret("GEMINI_API_KEY") else 0)
-    use_auto = mode.startswith("🤖")
-    api_key = ""
-    if use_auto:
-        api_key = st.text_input("Gemini API key", type="password",
-                                value=secret("GEMINI_API_KEY"))
     c1, c2 = st.columns(2)
     src_lang = c1.selectbox("မူရင်းဘာသာ", ["auto", "en", "zh", "ko", "ja", "hi", "th", "vi", "id"])
     wsize = c2.selectbox("Whisper model", ["tiny", "base", "small"], index=1,
@@ -528,19 +758,36 @@ with st.expander("⚙️ Settings", expanded=False):
     c3, c4 = st.columns(2)
     height = c3.select_slider("Output height", [360, 480, 720, 1080], value=720)
     max_speed = c4.slider("ရုပ် အမြန်ဆုံး ဆ", 1.0, 2.0, 1.25, 0.05)
-    models_txt = st.text_input("Gemini models (Auto မှာသာ)", DEFAULT_MODELS)
-    max_min = st.slider("Video အရှည် ကန့်သတ် (မိနစ်)", 1, 15, 6)
+    max_min = st.slider("Video အရှည် ကန့်သတ် (မိနစ်)", 1, 120, 15)
+    preset = st.selectbox("Render speed", ["ultrafast", "superfast", "veryfast"], index=0,
+                          help="ultrafast = အမြန်ဆုံး (file အနည်းငယ်ကြီး)၊ veryfast = file သေး/နှေးနည်းနည်း")
 
 with st.expander("🔊 အသံ (Voice)", expanded=False):
     engine = st.radio("TTS engine",
-                      ["Edge TTS", "VoxCPM (မရရင် Edge TTS auto)"], horizontal=False)
-    voice = st.selectbox("Edge voice", ["my-MM-ThihaNeural", "my-MM-NilarNeural"],
-                         format_func=lambda v: "Thiha (ယောက်ျား)" if "Thiha" in v else "Nilar (မိန်းမ)")
-    rate_n = st.slider("Edge speed %", -50, 100, 0, 5)
+                      ["Edge TTS", "VoxCPM (Edge TTS / Thiha မသုံးဘူး)"], horizontal=False)
+    is_vox = engine.startswith("Vox")
+
+    # Edge setting တွေကို Edge ရွေးမှပဲ ပြ — VoxCPM မှာ Thiha/Nilar လုံးဝ မပါ
+    voice, rate_n = "my-MM-ThihaNeural", 0
+    if not is_vox:
+        voice = st.selectbox("Edge voice", ["my-MM-ThihaNeural", "my-MM-NilarNeural"],
+                             format_func=lambda v: "Thiha (ယောက်ျား)" if "Thiha" in v else "Nilar (မိန်းမ)")
+        rate_n = st.slider("Edge speed %", -50, 100, 0, 5)
+        tts_workers = st.slider("TTS တစ်ပြိုင်နက် အရေအတွက်", 1, 10, 6,
+                                help="များရင်မြန်တယ်။ Edge က error ပေးရင် လျှော့ပါ")
+    else:
+        tts_workers = 1
+
     ref_up = None
-    if engine.startswith("Vox"):
-        ref_up = st.file_uploader("🎤 Reference audio (optional)", type=["wav", "mp3", "m4a"])
-        st.caption("VoxCPM Space တွေက queue/sleep ဖြစ်တတ်တယ်။ မရရင် စာကြောင်းတစ်ခုချင်း Edge TTS နဲ့ အစားထိုးမယ်။")
+    vox_retry = 4
+    if is_vox:
+        ref_up = st.file_uploader("🎤 Reference audio (အသံတစ်သံတည်း ဖြစ်ချင်ရင် တင်ပါ)",
+                                  type=["wav", "mp3", "m4a"])
+        vox_retry = st.slider("VoxCPM ပြန်စမ်းအကြိမ် (စာကြောင်းတစ်ခုချင်း)", 1, 8, 4,
+                              help="Space sleep/queue ဖြစ်ရင် ပြန်စမ်းမယ်။ ကုန်ရင် Edge မသုံးဘဲ error ပြမယ်")
+        st.caption("VoxCPM ရွေးထားရင် Edge TTS (Thiha/Nilar) လုံးဝ မဝင်ပါ။ "
+                   "VoxCPM မရရင် error ပြပြီး ရပ်မယ်၊ ခဏနေ ပြန်စမ်းပါ။ "
+                   "Reference audio တင်ရင် စာကြောင်းတိုင်း အသံတူမယ်။")
 
 with st.expander("🎨 စာတန်း (PNG) + Neon", expanded=False):
     use_sub = st.toggle("PNG စာတန်းထည့်", value=True)
@@ -548,43 +795,66 @@ with st.expander("🎨 စာတန်း (PNG) + Neon", expanded=False):
     sub_size = c5.slider("စာအရွယ် (% of width)", 3.0, 12.0, 7.0, 0.5)
     sub_pos = c6.slider("နေရာ (0=အပေါ် 100=အောက်)", 0, 100, 90, 1)
     use_neon = st.toggle("Neon border", value=True)
-    c7, c8 = st.columns(2)
-    neon_th = c7.slider("Neon ထူ (px)", 4, 24, 10)
-    neon_speed = c8.slider("Neon မြန်နှုန်း", 0.1, 1.0, 0.4, 0.05)
-    c9, c10 = st.columns(2)
-    flip = c9.toggle("Flip (ဘယ်ညာပြောင်း)", value=False)
-    zoom = c10.slider("Zoom", 1.0, 1.25, 1.0, 0.01)
-    c11, c12, c13 = st.columns([2, 2, 2])
-    sub_color = c11.color_picker("စာအရောင်", "#FFFFFF")
-    box_op = c12.slider("နောက်ခံ မည်း", 0.0, 1.0, 0.8, 0.05)
-    sub_bold = c13.toggle("စာထူ", value=False)
-    layout_sel = st.radio("မြန်မာစာ layout", ["Raqm (shaping)", "Basic"], horizontal=True,
-                          help="စာလုံး ပုံစံမမှန်ရင် Basic ကို ပြောင်းကြည့်ပါ")
+    zoom = st.slider("Zoom", 1.0, 1.25, 1.0, 0.01)
     font_path = find_font()
-    if font_path:
-        st.caption(f"Font: {os.path.basename(font_path)}")
-    else:
+    if not font_path:
         st.warning("Myanmar font မတွေ့ပါ။ MyanmarPadaung.ttf ကို repo root မှာ ထည့်ပါ။")
     if not features.check("raqm"):
         st.warning("raqm မရှိလို့ မြန်မာစာ ပုံစံ မမှန်နိုင်ပါ (packages.txt ထဲ libraqm0 ပါစေ)")
 
 rate = f"{rate_n:+d}%"
+
+# ---- ပုံသေတန်ဖိုးများ (UI မှာ မပြ၊ နောက်ကွယ်မှာ အလုပ်လုပ်)
+neon_th = 10
+neon_speed = 0.4
+flip = True
 sub_style = {
-    "alpha": int(box_op * 255),
-    "color": tuple(int(sub_color.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4)),
-    "bold": 1 if sub_bold else 0,
-    "layout": "raqm" if layout_sel.startswith("Raqm") else "basic",
+    "alpha": int(0.8 * 255),          # နောက်ခံ မည်း
+    "color": (255, 255, 255),         # စာအဖြူ
+    "bold": 0,
+    "layout": "raqm",
 }
-models = [m.strip() for m in models_txt.split(",") if m.strip()]
 proxy = secret("EDGE_TTS_PROXY") or None
 hf_token = secret("HF_TOKEN") or None
 
-up = st.file_uploader("Video ရွေးပါ", type=["mp4", "mov", "mkv", "webm", "m4v"])
+mode = st.radio("Video ရင်းမြစ်", ["🔗 Link", "📁 Upload"], horizontal=True)
+vid_path = None
+if mode.startswith("🔗"):
+    url_in = st.text_input("Video link (direct mp4 / Google Drive / Dropbox / YouTube / Facebook / TikTok ...)",
+                           placeholder="https://...", key="link_url")
+    if st.button("⬇️ Link ကနေ ဆွဲမယ်", use_container_width=True, disabled=not url_in.strip()):
+        with st.status("⬇️ Video ဆွဲနေတယ်...", expanded=True) as ds:
+            dbar = st.progress(0.0)
+            t_dl = time.time()
+            try:
+                p = fetch_link(url_in, height, dbar, secret("YT_COOKIES") or None)
+                paths = st.session_state.setdefault("up_paths", [])
+                if p not in paths:
+                    paths.append(p)
+                st.session_state["link_path"] = p
+                st.session_state["link_src"] = url_in.strip()
+                ds.update(label=f"✅ ဆွဲပြီး · {os.path.getsize(p)/1e6:.1f} MB · {fmt_t(time.time() - t_dl)}",
+                          state="complete")
+            except Exception as ex:  # noqa: BLE001
+                st.session_state.pop("link_path", None)
+                st.session_state.pop("link_src", None)
+                ds.update(label="❌ မဆွဲနိုင်ပါ", state="error")
+                st.error(str(ex)[:900])
+    lp = st.session_state.get("link_path")
+    if lp and os.path.exists(lp):
+        vid_path = lp
+        st.caption(f"📎 ဆွဲထားတဲ့ video: {os.path.getsize(lp)/1e6:.1f} MB")
+        if st.session_state.get("link_src") != url_in.strip():
+            st.warning("Link ပြောင်းထားတယ်။ ⬇️ ကို ပြန်နှိပ်မှ video အသစ်ရမယ် (အခုက အရင် link ကိုပဲ သုံးနေတယ်)")
+else:
+    up = st.file_uploader("Video ရွေးပါ", type=["mp4", "mov", "mkv", "webm", "m4v"],
+                          key=f"vid_{st.session_state.get('up_key', 0)}")
+    if up:
+        vid_path = save_upload(up)
 
-if up:
+if vid_path:
     try:
-        up_path = save_upload(up)
-        pv = make_preview(up_path, height, "စာတန်းထိုး နမူနာ စာသား ဖြစ်ပါတယ်။", font_path,
+        pv = make_preview(vid_path, height, "စာတန်းထိုး နမူနာ စာသား ဖြစ်ပါတယ်။", font_path,
                           sub_size, sub_pos, use_neon, neon_th, neon_speed, flip, zoom, sub_style)
         if pv is not None:
             st.image(pv, caption="Preview", use_container_width=True)
@@ -594,13 +864,13 @@ if up:
 # ====================================================================
 # Stage 1 : Whisper + Gemini
 # ====================================================================
-if st.button("1️⃣ စာသားထုတ်" + (" + မြန်မာပြန်" if use_auto else ""), type="primary",
-             disabled=not (up and (api_key or not use_auto)), use_container_width=True):
+if st.button("1️⃣ စာသားထုတ်", type="primary", disabled=not vid_path, use_container_width=True):
     reset_job()
+    st.session_state.pop("cleaned", None)
     wd = tempfile.mkdtemp(prefix="recap_")
     st.session_state["wd"] = wd
     src = os.path.join(wd, "src.mp4")
-    shutil.copy(save_upload(up), src)
+    shutil.copy(vid_path, src)
 
     try:
         vdur = dur(src)
@@ -610,17 +880,23 @@ if st.button("1️⃣ စာသားထုတ်" + (" + မြန်မာပ�
             st.stop()
         st.session_state["vdur"] = vdur
 
+        T1 = {}
         with st.status("🎧 Whisper စာသားပြောင်းနေတယ်...", expanded=True) as stt:
+            t_a = time.time()
             wav = os.path.join(wd, "audio16k.wav")
             sh(["ffmpeg", "-y", "-i", src, "-vn", "-ac", "1", "-ar", "16000", wav])
-            wm = load_whisper(wsize)
             with wave.open(wav) as wf:
                 audio = np.frombuffer(
                     wf.readframes(wf.getnframes()), dtype=np.int16
                 ).astype(np.float32) / 32768.0
+            T1["🎞️ Audio ထုတ်"] = time.time() - t_a
+            t_a = time.time()
+            wm = load_whisper(wsize)
+            T1["📦 Whisper model ဖွင့်"] = time.time() - t_a
+            t_a = time.time()
             segs, info = wm.transcribe(
                 audio, language=None if src_lang == "auto" else src_lang,
-                vad_filter=True, beam_size=5)
+                vad_filter=True, beam_size=1, condition_on_previous_text=False)
             st.write(f"ဘာသာစကား: **{info.language}** ({info.language_probability:.0%})")
             bar = st.progress(0.0)
             raw = []
@@ -628,6 +904,7 @@ if st.button("1️⃣ စာသားထုတ်" + (" + မြန်မာပ�
                 if s.text.strip():
                     raw.append((s.start, s.end, s.text.strip()))
                 bar.progress(min(s.end / vdur, 1.0))
+            T1["🎧 Whisper စာသားပြောင်း"] = time.time() - t_a
             units = []
             for s, e, t in raw:
                 if units and (units[-1][1] - units[-1][0]) < TARGET and (e - units[-1][0]) <= MAXD:
@@ -637,53 +914,14 @@ if st.button("1️⃣ စာသားထုတ်" + (" + မြန်မာပ�
             if not units:
                 stt.update(label="စကားပြောသံ မတွေ့ပါ", state="error")
                 st.stop()
-            stt.update(label=f"🎧 အပိုင်း {len(units)} ခု ရပြီ", state="complete")
-
-        my = {}
-        if use_auto:
-            gen = make_gen(api_key, models)
-            with st.status("🌐 Gemini ဘာသာပြန်နေတယ်...", expanded=True) as gst:
-                full = " ".join(u[2] for u in units)
-                context = gen(
-                    "Read this story transcript (any language). List main character names, "
-                    "relationships, places and key terms in a short English bullet list.\n\n"
-                    + full[:60000], json_out=False)
-                sysmsg = (
-                    "You are a Burmese (Myanmar) recap-video narrator. Input units may be in "
-                    "Chinese, English or another language. Translate each unit into natural "
-                    "spoken Burmese narration. Rules: do NOT summarize or shorten, do NOT skip, "
-                    "do NOT move content between units, keep character names consistent, use "
-                    "ONLY Burmese script (no other scripts).\nStory notes:\n" + context +
-                    '\nInput is a JSON list of {"id":n,"text":"..."}. Return ONLY a JSON list '
-                    'of {"id":n,"my":"..."} with the same ids.'
-                )
-                my = {}
-                bar = st.progress(0.0)
-                for b in range(0, len(units), BATCH):
-                    items = [{"id": i, "text": units[i][2]}
-                             for i in range(b, min(b + BATCH, len(units)))]
-                    for _ in range(3):
-                        try:
-                            out = json.loads(gen(sysmsg + "\n\n" + json.dumps(items, ensure_ascii=False)))
-                            for o in out:
-                                my[int(o["id"])] = clean_my(o["my"])
-                            if all(my.get(it["id"]) for it in items):
-                                break
-                        except Exception:  # noqa: BLE001
-                            pass
-                    bar.progress(min((b + BATCH) / len(units), 1.0))
-                for i in range(len(units)):
-                    if not my.get(i):
-                        my[i] = clean_my(gen(
-                            "Translate to natural spoken Burmese narration only, no notes:\n"
-                            + units[i][2], json_out=False))
-                gst.update(label="🌐 ဘာသာပြန်ပြီး", state="complete")
+            stt.update(label=f"🎧 အပိုင်း {len(units)} ခု ရပြီ · {fmt_t(sum(T1.values()))}", state="complete")
+            st.session_state["t1"] = T1
 
         st.session_state["units"] = [
-            {"start": units[i][0], "end": units[i][1], "src": units[i][2], "my": my.get(i, "")}
+            {"start": units[i][0], "end": units[i][1], "src": units[i][2], "my": ""}
             for i in range(len(units))
         ]
-        st.session_state["manual"] = not use_auto
+        st.session_state["manual"] = True
         st.session_state["ver"] = st.session_state.get("ver", 0) + 1
     except Exception as ex:  # noqa: BLE001
         st.error(f"Error: {ex}")
@@ -693,6 +931,8 @@ if st.button("1️⃣ စာသားထုတ်" + (" + မြန်မာပ�
 # ====================================================================
 if st.session_state.get("units"):
     units = st.session_state["units"]
+    if st.session_state.get("t1"):
+        st.caption("⏱️ " + " · ".join(f"{k} {fmt_t(v)}" for k, v in st.session_state["t1"].items()))
 
     if st.session_state.get("manual"):
         st.subheader("📋 Gemini မှာ ဘာသာပြန်ရန်")
@@ -714,26 +954,22 @@ if st.session_state.get("units"):
         if st.session_state.get("apply_msg"):
             st.info(st.session_state["apply_msg"])
 
-    st.subheader("✏️ မြန်မာစာသား စစ်/ပြင်")
-    df = pd.DataFrame({"#": range(len(units)),
-                       "မူရင်း": [u["src"] for u in units],
-                       "မြန်မာ": [u["my"] for u in units]})
-    edited = st.data_editor(df, disabled=["#", "မူရင်း"], hide_index=True,
-                            use_container_width=True, key=f"editor_{st.session_state.get('ver', 0)}")
-
     if st.button("2️⃣ အသံထုတ် + Video ပေါင်း", type="primary", use_container_width=True):
         wd, vdur = st.session_state["wd"], st.session_state["vdur"]
         src = os.path.join(wd, "src.mp4")
-        my_list = [clean_my(str(t)) or units[i]["my"] for i, t in enumerate(edited["မြန်မာ"])]
+        my_list = [clean_my(u["my"]) for u in units]
         n = len(units)
         empty = [i for i, t in enumerate(my_list) if not t.strip()]
         if empty:
             st.error(f"မြန်မာစာသား မဖြည့်ရသေးတဲ့ စာကြောင်း: {empty[:20]}")
             st.stop()
         try:
-            # ---------------- TTS
+            T = {}
+            t_all = time.time()
+
+            # ---------------- TTS (တစ်ပြိုင်နက်)
             vox = None
-            if engine.startswith("Vox"):
+            if is_vox:
                 ref_path = None
                 if ref_up:
                     ref_path = os.path.join(wd, "ref.wav")
@@ -741,97 +977,127 @@ if st.session_state.get("units"):
                         f.write(ref_up.getbuffer())
                 vox = VoxEngine(ref_path, hf_token)
 
-            fallback = 0
-            durs = []
+            sig_base = f"{engine}|{voice}|{rate}|" + \
+                (f"{ref_up.name}-{ref_up.size}" if ref_up else "noref")
+
+            def do_line(i):
+                wav = f"{wd}/a{i:04d}.wav"
+                keyf = f"{wd}/a{i:04d}.key"
+                key = hashlib.md5(f"{sig_base}|{my_list[i]}".encode()).hexdigest()
+                # ---- Resume: အရင်အောင်ပြီးသား (စာသား/engine/voice မပြောင်း) ဆိုရင် ကျော်
+                if os.path.exists(wav) and os.path.exists(keyf):
+                    try:
+                        with open(keyf) as kf:
+                            if kf.read().strip() == key:
+                                return i, wav_dur(wav), vox is not None
+                    except Exception:  # noqa: BLE001
+                        pass
+                if vox is not None:
+                    # ---- VoxCPM သီးသန့် (Edge fallback မရှိ)
+                    raw_audio = f"{wd}/a{i:04d}_raw.wav"
+                    used = None
+                    for attempt in range(vox_retry):
+                        used = vox.synth(my_list[i], raw_audio)
+                        if used:
+                            break
+                        vox.reset()              # space ကို ပြန်စမ်းခွင့်ပေး
+                        time.sleep(3)
+                    if not used:
+                        raise RuntimeError(
+                            f"VoxCPM မအောင်မြင်ပါ (စာကြောင်း #{i}): {vox.last_err}\n\n"
+                            "Edge TTS (Thiha) ကို မသုံးထားပါ။ Space sleep/queue ဖြစ်နေနိုင်လို့ "
+                            "ခဏနေပြီး ပြန်စမ်းပါ။")
+                else:
+                    # ---- Edge TTS သီးသန့်
+                    raw_audio = f"{wd}/a{i:04d}_raw.mp3"
+                    for attempt in range(4):
+                        try:
+                            tts_edge(my_list[i], voice, rate, raw_audio, proxy)
+                            break
+                        except Exception as ex:  # noqa: BLE001
+                            if attempt == 3:
+                                raise RuntimeError(
+                                    f"Edge TTS မအောင်မြင်ပါ (စာကြောင်း #{i}): {ex}\n\n{my_list[i]}")
+                            time.sleep(1.5)
+                sh(["ffmpeg", "-y", "-i", raw_audio, "-af", TRIM, "-ar", "44100", "-ac", "1", wav])
+                with open(keyf, "w") as kf:      # အောင်မှ key သိမ်း
+                    kf.write(key)
+                return i, wav_dur(wav), vox is not None
+
+            durs = [0.0] * n
+            vox_ok = 0
+            workers = 1 if vox is not None else tts_workers
+            t_a = time.time()
             with st.status("🔊 မြန်မာအသံ ထုတ်နေတယ်...", expanded=True) as tst:
                 bar = st.progress(0.0)
-                for i in range(n):
-                    raw_audio = f"{wd}/a{i:04d}_raw"
-                    wav = f"{wd}/a{i:04d}.wav"
-                    used = None
-                    if vox is not None:
-                        used = vox.synth(my_list[i], raw_audio + ".wav")
-                        if used:
-                            raw_audio += ".wav"
-                    if not used:
-                        if vox is not None:
-                            fallback += 1
-                        raw_audio += ".mp3"
-                        for attempt in range(4):
-                            try:
-                                tts_edge(my_list[i], voice, rate, raw_audio, proxy)
-                                break
-                            except Exception as ex:  # noqa: BLE001
-                                if attempt == 3:
-                                    raise RuntimeError(
-                                        f"Edge TTS မအောင်မြင်ပါ (စာကြောင်း #{i}): {ex}\n\n{my_list[i]}")
-                                time.sleep(2)
-                    sh(["ffmpeg", "-y", "-i", raw_audio, "-af", TRIM, "-ar", "44100", wav])
-                    durs.append(dur(wav))
-                    bar.progress((i + 1) / n)
-                msg = "🔊 အသံ ပြီးပြီ"
+                done = 0
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    futs = [pool.submit(do_line, i) for i in range(n)]
+                    try:
+                        for fu in as_completed(futs):
+                            i_, d_, u_ = fu.result()
+                            durs[i_] = d_
+                            vox_ok += 1 if u_ else 0
+                            done += 1
+                            bar.progress(done / n)
+                    except Exception:
+                        for f_ in futs:
+                            f_.cancel()
+                        tst.update(label="🔊 အသံထုတ် မအောင်မြင်ပါ", state="error")
+                        raise
+                T["🔊 အသံထုတ် (TTS)"] = time.time() - t_a
+                msg = f"🔊 အသံ ပြီးပြီ · {fmt_t(T['🔊 အသံထုတ် (TTS)'])}"
                 if vox is not None:
-                    msg += f" (VoxCPM: {n - fallback}/{n})"
-                    if fallback and vox.last_err:
-                        st.caption(f"Vox error: {vox.last_err}")
+                    msg += f" (VoxCPM: {vox_ok}/{n})"
                 tst.update(label=msg, state="complete")
 
-            # ---------------- Smart Sync
-            with st.status("🎬 Smart Sync render...", expanded=True) as rst:
-                bounds = [0.0] + [(units[i]["end"] + units[i + 1]["start"]) / 2
-                                  for i in range(n - 1)] + [vdur]
-                clips = []
-                bar = st.progress(0.0)
+            # ---------------- အသံ ပေါင်း
+            t_a = time.time()
+            lst = f"{wd}/alist.txt"
+            with open(lst, "w") as f:
                 for i in range(n):
-                    s, e = bounds[i], bounds[i + 1]
-                    w = max(e - s, 0.2)
-                    wav = f"{wd}/a{i:04d}.wav"
-                    d = durs[i]
-                    if w / d > max_speed:
-                        w_use, factor = d * max_speed, 1 / max_speed
-                    else:
-                        w_use, factor = w, d / w
-                    out = f"{wd}/c{i:04d}.mp4"
-                    sh(["ffmpeg", "-y", "-ss", f"{s:.3f}", "-t", f"{w_use:.3f}", "-i", src,
-                        "-i", wav,
-                        "-vf", f"setpts=(PTS-STARTPTS)*{factor:.6f},fps=30,"
-                               f"scale=-2:{height},setsar=1,tpad=stop_mode=clone:stop_duration=2",
-                        "-map", "0:v:0", "-map", "1:a:0", "-t", f"{d:.3f}",
-                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
-                        "-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "44100", "-ac", "2", out])
-                    clips.append(out)
-                    bar.progress((i + 1) / n)
+                    f.write(f"file '{wd}/a{i:04d}.wav'\n")
+            allwav = f"{wd}/all.wav"
+            sh(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", allwav])
+            T["🔗 အသံ ပေါင်း"] = time.time() - t_a
 
-                lst = f"{wd}/list.txt"
-                with open(lst, "w") as f:
-                    for c in clips:
-                        f.write(f"file '{c}'\n")
-                synced = f"{wd}/synced.mp4"
-                sh(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", synced])
-                rst.update(label=f"🎬 Smart Sync ပြီး ({dur(synced):.1f}s / မူရင်း {vdur:.1f}s)",
-                           state="complete")
+            # ---------------- Smart Sync plan + Render (single pass)
+            bounds = [0.0] + [(units[i]["end"] + units[i + 1]["start"]) / 2
+                              for i in range(n - 1)] + [vdur]
+            plan, cum = [], 0.0
+            for i in range(n):
+                s_, e_ = bounds[i], bounds[i + 1]
+                w = max(e_ - s_, 0.2)
+                d = max(durs[i], 0.05)
+                w_use = d * max_speed if w / d > max_speed else w
+                plan.append((cum, d, s_, w_use / d))
+                cum += d
 
-            # ---------------- PNG subtitle + Neon
-            final = synced
-            if use_sub or use_neon or flip or zoom > 1.001:
-                subs, t0 = [], 0.0
-                if use_sub:
-                    for i in range(n):
-                        parts = split_for_sub(my_list[i])
-                        tot = sum(len(p) for p in parts) or 1
-                        cur = t0
-                        for p in parts:
-                            dd = durs[i] * len(p) / tot
-                            subs.append((cur, cur + dd, p))
-                            cur += dd
-                        t0 += durs[i]
-                with st.status("🖼️ PNG စာတန်း + Neon ထည့်နေတယ်...", expanded=True) as ost:
-                    bar = st.progress(0.0)
-                    final = f"{wd}/final.mp4"
-                    overlay_pass(synced, final, subs, font_path if use_sub else None,
-                                 sub_size, sub_pos, use_neon, neon_th, neon_speed,
-                                 flip, zoom, sub_style, progress=bar)
-                    ost.update(label="🖼️ စာတန်း/Neon ပြီး", state="complete")
+            subs, t0 = [], 0.0
+            if use_sub:
+                for i in range(n):
+                    parts = split_for_sub(my_list[i])
+                    tot = sum(len(p) for p in parts) or 1
+                    cur = t0
+                    for p in parts:
+                        dd = durs[i] * len(p) / tot
+                        subs.append((cur, cur + dd, p))
+                        cur += dd
+                    t0 += durs[i]
+
+            t_a = time.time()
+            with st.status("🎬 Video render (Smart Sync + စာတန်း + Neon)...", expanded=True) as rst:
+                bar = st.progress(0.0)
+                final = f"{wd}/final.mp4"
+                render_final(src, allwav, final, plan, cum, height, subs,
+                             font_path if use_sub else None, sub_size, sub_pos,
+                             use_neon, neon_th, neon_speed, flip, zoom, sub_style,
+                             preset=preset, progress=bar)
+                T["🎬 Video render"] = time.time() - t_a
+                rst.update(label=f"🎬 Render ပြီး ({cum:.1f}s / မူရင်း {vdur:.1f}s) · "
+                                 f"{fmt_t(T['🎬 Video render'])}", state="complete")
+            T["⏱️ စုစုပေါင်း (အဆင့် 2)"] = time.time() - t_all
+            st.session_state["t2"] = T
 
             with open(final, "rb") as f:
                 st.session_state["result"] = f.read()
@@ -843,10 +1109,22 @@ if st.session_state.get("units"):
 # ====================================================================
 if st.session_state.get("result"):
     st.subheader("✅ ရလဒ်")
-    st.video(st.session_state["result"])
+    mb = len(st.session_state["result"]) / 1e6
+    st.caption(f"📦 File အရွယ်အစား: {mb:.1f} MB")
+    if st.toggle("▶️ ဒီမှာ video ကြည့်မယ် (ဖိုင်ကြီးရင်/net နှေးရင် ကြာတတ်)", value=False, key="show_vid"):
+        st.video(st.session_state["result"])
+    _tt = {}
+    _tt.update(st.session_state.get("t1") or {})
+    _tt.update(st.session_state.get("t2") or {})
+    if _tt:
+        st.markdown("**⏱️ ဘယ်အပိုင်း ဘယ်လောက်ကြာလဲ**\n\n" + timing_table(_tt))
     st.download_button("⬇️ Download MP4", st.session_state["result"],
                        file_name="final_myanmar.mp4", mime="video/mp4",
-                       use_container_width=True)
+                       use_container_width=True, on_click=cleanup_after_download)
+    if st.session_state.get("cleaned"):
+        st.caption("🧹 Script နဲ့ တင်ထားတဲ့ video ကို ဖျက်ပြီးပါပြီ")
     if st.button("🗑️ အသစ်ပြန်စ", use_container_width=True):
         reset_job()
+        cleanup_uploads()
+        st.session_state.pop("cleaned", None)
         st.rerun()
