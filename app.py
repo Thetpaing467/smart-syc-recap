@@ -554,7 +554,7 @@ def make_preview(path, height, text, font_path, fs_pct, pos_y, neon_on, neon_th,
 
 
 # ====================================================================
-# Prompt builder (Dubbing / Recap)  ← UPDATED
+# Prompt builder (Dubbing / Recap)  ← RECAP FIXED
 # ====================================================================
 def build_prompt(units, mode="dub"):
     if mode == "dub":
@@ -573,23 +573,40 @@ def build_prompt(units, mode="dub"):
         f"[{i}] ({u['end'] - u['start']:.1f}s) {u['src']}" for i, u in enumerate(units)
     )
     return (
-        f"You are a professional Burmese (Myanmar) recap-video storyteller. Below is the transcript "
-        f"of a video, split into {n} numbered segments (each with its duration in seconds). "
-        "First read the WHOLE transcript to understand the full story. Then retell it as an "
-        "engaging Burmese recap narration, NOT a word-for-word translation.\n\n"
-        "Rules:\n"
-        "- Write natural spoken Burmese, storyteller tone, simple everyday words, easy to hear.\n"
-        "- Open segment [0] with a short hook that grabs attention.\n"
-        "- You may rephrase, tighten and add smooth transitions, but keep every key fact, "
-        "event and name. Do not invent facts.\n"
-        "- Keep character/place/product names consistent across all lines.\n"
-        "- Each line must match the scene of its own segment (do not move content to other "
-        "segments), and its spoken length should fit the segment duration "
-        "(about 3-4 Burmese syllables per second).\n"
-        "- End the last segment with a short closing sentence.\n"
-        "- Use ONLY Burmese script (Myanmar Unicode). No English/Chinese letters. Numbers as digits are OK.\n"
-        f"- Output EXACTLY {n} lines, one per segment, in the format: [number] Burmese text\n"
-        "- Same numbers, no extra comments, no headings, no blank lines.\n\n"
+        f"You are a professional Burmese (Myanmar) recap-video storyteller.\n\n"
+        f"The transcript below is split into {n} numbered segments "
+        f"(each with its duration in seconds).\n\n"
+        "=== STEP 1: UNDERSTAND THE STORY ===\n"
+        "First read the WHOLE transcript from start to finish to understand "
+        "the full story, characters, and events. Do NOT translate yet.\n\n"
+        "=== STEP 2: RETELL AS RECAP ===\n"
+        "Then retell the story as an engaging Burmese (Myanmar) recap narration. "
+        "This is NOT a word-for-word translation — it is a storyteller retelling "
+        "of the same story, in natural spoken Burmese, easy to hear.\n\n"
+        "=== STEP 3: FIT INTO SEGMENTS ===\n"
+        f"Now write the recap as EXACTLY {n} numbered lines — one line per segment. "
+        "Distribute the recap content across the segments so that:\n"
+        "- Each line covers the scene of ITS OWN segment (do not move a scene to another segment).\n"
+        "- The key facts of each segment appear in that segment's line.\n"
+        "- Each line's spoken length fits its segment duration "
+        "(target 3.5 Burmese syllables per second; allowed = duration × 3.5 ±15%).\n"
+        "- If a segment is short, compress the wording — never drop key facts.\n"
+        "- If a segment is long, expand naturally with storyteller detail — never invent facts.\n\n"
+        "=== STYLE RULES ===\n"
+        "- Natural spoken Burmese, storyteller tone, simple everyday words.\n"
+        "- Segment [0] opens with a short attention hook.\n"
+        "- The last segment ends with a brief closing sentence.\n"
+        "- Keep character / place / product names consistent across all lines.\n"
+        "- Do not invent facts. Keep every key event and name.\n"
+        "- Use smooth transitions between lines (e.g. ပြီးတော့, ဒါပေမယ့်, ထို့နောက်).\n\n"
+        "=== OUTPUT FORMAT ===\n"
+        "- Use ONLY Burmese script (Myanmar Unicode). No English/Chinese letters.\n"
+        "  Western names may be transliterated into Burmese syllables only.\n"
+        "  Arabic digits 0–9 are allowed. Burmese punctuation ။ ၊ is allowed.\n"
+        f"- Output EXACTLY {n} lines, one per segment, sequential numbers 0..{n-1}.\n"
+        "- Format each line as: [number] Burmese text\n"
+        "- Same numbers, no extra comments, no headings, no blank lines, no markdown.\n\n"
+        "--- TRANSCRIPT (with segment durations) ---\n"
         + lines
     )
 
