@@ -73,8 +73,10 @@ def timing_table(d):
     return "| အဆင့် | ကြာချိန် |\n|---|---|\n" + rows
 
 
-def clean_my(text):
-    """မြန်မာစာ၊ ဂဏန်း၊ ပုဒ်ဖြတ်သာ ကျန်ခဲ့"""
+def clean_text(text, lang="မြန်မာ"):
+    """ဘာသာစကားအလိုက် မလိုတဲ့ စာလုံးဖျက်"""
+    if lang == "ဂျာမနီ":
+        return re.sub(r"[^A-Za-zÄÖÜäöüß0-9\s.,!?\"'%\-]", "", text).strip()
     return re.sub(
         r"[^\u1000-\u109F\uAA60-\uAA7F\uA9E0-\uA9FF\s0-9.,!?\"'%\-]", "", text
     ).strip()
@@ -124,7 +126,6 @@ class VoxEngine:
         self.lock = threading.Lock()
 
     def reset(self):
-        """Space အားလုံးကို ပြန်စမ်းခွင့်ပေး"""
         with self.lock:
             self.dead.clear()
             self.fails = {i: 0 for i in range(len(VOX_SPACES))}
@@ -139,7 +140,7 @@ class VoxEngine:
         for i in order:
             sp = VOX_SPACES[i]
             if sp["type"] == "burmese" and not self.ref:
-                self.dead.add(i)          # reference audio မပါရင် ဒီ space မသုံးနိုင်
+                self.dead.add(i)
                 self.last_err = f"{sp['space']}: reference audio လိုအပ်တယ်"
                 continue
             try:
@@ -177,7 +178,6 @@ class VoxEngine:
 # Subtitle PNG (Pillow) helpers
 # ====================================================================
 def find_font():
-    """Myanmar font ရှာ: repo ထဲက MyanmarPadaung.ttf → တခြား .ttf → system (Padauk/Noto Myanmar)"""
     here = os.path.dirname(os.path.abspath(__file__))
     for name in ("MyanmarPadaung.ttf", "fonts/MyanmarPadaung.ttf"):
         pref = os.path.join(here, name)
@@ -219,7 +219,6 @@ def _is_start(c):
 
 
 def split_syll(word):
-    """မြန်မာစာလုံးကို syllable အလိုက်ခွဲ (အတိအကျမဟုတ်၊ ဖြတ်ဖို့လုံလောက်)"""
     idx = [0]
     n = len(word)
     for i in range(1, n):
@@ -253,7 +252,6 @@ def wrap_text(text, font, maxw):
 
 
 def split_for_sub(text, mc=36):
-    """စာတန်းတစ်ခုချင်းစီအတွက် စာသားခွဲ (။ နဲ့ နေရာလွတ် အလိုက်)"""
     sents = [s.strip() for s in re.split(r"(?<=။)", text) if s.strip()]
     parts = []
     for s in sents:
@@ -277,7 +275,6 @@ def split_for_sub(text, mc=36):
 
 def build_overlay(text, W, H, font_path, fs, pos_y, alpha=200, color=(255, 255, 255),
                   bold=0, layout="raqm"):
-    """စာတန်း PNG (RGBA): အနက်ရောင် rounded box (အကျယ်အပြည့်) + ဖြူစာ + အနက်အနားသတ်"""
     font = get_font(font_path, fs, layout)
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
@@ -327,7 +324,7 @@ def blend_overlay(fr, ov):
 # Neon border
 # ====================================================================
 class Neon:
-    BASE = np.array([12, 8, 10], np.float32)         # BGR
+    BASE = np.array([12, 8, 10], np.float32)
     CYAN = np.array([255, 255, 0], np.float32)
     MAGENTA = np.array([110, 30, 255], np.float32)
     IDLE = 0.14
@@ -378,8 +375,6 @@ def zoom_flip(fr, zoom, flip):
 def render_final(src, audio, out, plan, total, height, subs, font_path, fs_pct, pos_y,
                  neon_on, neon_th, neon_speed, flip, zoom, style=None, preset="ultrafast",
                  progress=None, fps_out=30):
-    """Single pass: source frame တစ်ခါဖတ် → smart-sync retime + zoom/flip + neon + စာတန်း → encode တစ်ခါ။
-    decode thread / python processing / ffmpeg encode သုံးခု တစ်ပြိုင်နက် အလုပ်လုပ်။"""
     style = style or {}
     cap = cv2.VideoCapture(src)
     sfps = cap.get(cv2.CAP_PROP_FPS) or 30.0
@@ -413,7 +408,7 @@ def render_final(src, audio, out, plan, total, height, subs, font_path, fs_pct, 
                     ui += 1
                 cs, _d, s0, spd = plan[ui]
                 idx = min(int((s0 + (T - cs) * spd) * sfps + 0.5), stotal - 1)
-                if idx > cur + 90:                      # ကြီးကြီးကျော်ရင် seek
+                if idx > cur + 90:
                     cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
                     cur = idx - 1
                 new = False
@@ -522,27 +517,39 @@ def make_preview(path, height, text, font_path, fs_pct, pos_y, neon_on, neon_th,
 # ====================================================================
 # Manual translate helpers (Gemini app မှာ copy-paste)
 # ====================================================================
-def build_prompt(units):
-    lines = "\n".join(f"[{i}] {u['src']}" for i, u in enumerate(units))
-    return (
+PROMPT_LANGS = {
+    "မြန်မာ": (
         "You are a Burmese (Myanmar) recap-video narrator. Translate every numbered line "
         "below into natural spoken Burmese narration (storyteller style). Rules: do NOT "
         "summarize, shorten or skip; do NOT move content between lines; keep character "
         "names consistent across all lines; use ONLY Burmese script (Myanmar Unicode), "
         "no English/Chinese letters. Output exactly one line per input line in the format "
-        "[number] Burmese text -- same numbers, no extra comments.\n\n" + lines
-    )
+        "[number] Burmese text -- same numbers, no extra comments.\n\n"
+    ),
+    "ဂျာမနီ": (
+        "You are a German (Deutsch) recap-video narrator. Translate every numbered line "
+        "below into natural spoken German narration (storyteller style). Rules: do NOT "
+        "summarize, shorten or skip; do NOT move content between lines; keep character "
+        "names consistent across all lines; use ONLY German (Latin script), no Chinese "
+        "letters. Output exactly one line per input line in the format "
+        "[number] German text -- same numbers, no extra comments.\n\n"
+    ),
+}
+
+
+def build_prompt(units, lang="မြန်မာ"):
+    lines = "\n".join(f"[{i}] {u['src']}" for i, u in enumerate(units))
+    return PROMPT_LANGS.get(lang, PROMPT_LANGS["မြန်မာ"]) + lines
 
 
 def parse_numbered(text, n):
-    """'[3] စာသား' / '3. စာသား' / '3) စာသား' ပုံစံကို {id: text} ပြောင်း"""
     got = {}
     for line in text.splitlines():
         line = line.strip().strip("*").strip()
         m = re.match(r"^[\[\(#]?\s*(\d+)\s*[\]\)\.:\-–]?\s*(.+)$", line)
         if m and int(m.group(1)) < n:
             got[int(m.group(1))] = m.group(2).strip().strip("*").strip()
-    if not got:  # နံပါတ်မပါရင် စာကြောင်းအရေအတွက်ညီမှ အစဉ်လိုက်ယူ
+    if not got:
         plain = [l.strip() for l in text.splitlines() if l.strip()]
         if len(plain) == n:
             got = {i: plain[i] for i in range(n)}
@@ -564,7 +571,6 @@ def reset_job():
 
 
 def cleanup_uploads():
-    """တင်ထားတဲ့ video file တွေ ဖျက် + uploader ကို reset (VoxCPM reference audio ကို မထိ)"""
     for p in st.session_state.get("up_paths", []):
         try:
             os.remove(p)
@@ -577,7 +583,6 @@ def cleanup_uploads():
 
 
 def cleanup_after_download():
-    """Download နှိပ်ပြီးတာနဲ့: script + uploaded video + work files ဖျက်။ (ရလဒ် video ကို download အတွက် ချန်)"""
     wd = st.session_state.get("wd")
     if wd and os.path.isdir(wd):
         shutil.rmtree(wd, ignore_errors=True)
@@ -588,7 +593,6 @@ def cleanup_after_download():
 
 
 def save_upload(up):
-    """Upload ကို /tmp ထဲ တစ်ခါပဲ သိမ်း (rerun တိုင်း ပြန်မရေး)"""
     key = hashlib.md5(f"{up.name}-{up.size}".encode()).hexdigest()[:12]
     path = f"/tmp/recap_up_{key}.mp4"
     if not os.path.exists(path):
@@ -601,7 +605,7 @@ def save_upload(up):
 
 
 # ====================================================================
-# Link download (direct / Google Drive / Dropbox / YouTube ... yt-dlp ထောက်ပံ့တဲ့ site အားလုံး)
+# Link download
 # ====================================================================
 VIDEO_EXT = (".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi", ".ts", ".flv")
 
@@ -678,7 +682,6 @@ def _dl_ytdlp(url, out_noext, height, bar=None, cookies_text=None):
 
 
 def _ensure_mp4(raw, final, height):
-    """h264 mp4 ဖြစ်အောင် လုပ် (cv2 ဖတ်နိုင်ဖို့)။ h264 ဆိုရင် copy၊ မဟုတ်ရင် re-encode"""
     try:
         codec = sh(["ffprobe", "-v", "error", "-select_streams", "v:0",
                     "-show_entries", "stream=codec_name", "-of", "csv=p=0", raw]).strip()
@@ -767,12 +770,12 @@ with st.expander("🔊 အသံ (Voice)", expanded=False):
                       ["Edge TTS", "VoxCPM (Edge TTS / Thiha မသုံးဘူး)"], horizontal=False)
     is_vox = engine.startswith("Vox")
 
-    # Edge setting တွေကို Edge ရွေးမှပဲ ပြ — VoxCPM မှာ Thiha/Nilar လုံးဝ မပါ
     voice, rate_n = "my-MM-ThihaNeural", 0
     if not is_vox:
         voice = st.selectbox("Edge voice", ["my-MM-ThihaNeural", "my-MM-NilarNeural"],
                              format_func=lambda v: "Thiha (ယောက်ျား)" if "Thiha" in v else "Nilar (မိန်းမ)")
-        rate_n = st.slider("Edge speed %", -50, 100, 0, 5)
+        # ---- Speed default 45 (သင့်တောင်းဆိုချက်)
+        rate_n = st.slider("Edge speed %", -50, 100, 45, 5)
         tts_workers = st.slider("TTS တစ်ပြိုင်နက် အရေအတွက်", 1, 10, 6,
                                 help="များရင်မြန်တယ်။ Edge က error ပေးရင် လျှော့ပါ")
     else:
@@ -804,13 +807,12 @@ with st.expander("🎨 စာတန်း (PNG) + Neon", expanded=False):
 
 rate = f"{rate_n:+d}%"
 
-# ---- ပုံသေတန်ဖိုးများ (UI မှာ မပြ၊ နောက်ကွယ်မှာ အလုပ်လုပ်)
 neon_th = 10
 neon_speed = 0.4
 flip = True
 sub_style = {
-    "alpha": int(0.8 * 255),          # နောက်ခံ မည်း
-    "color": (255, 255, 255),         # စာအဖြူ
+    "alpha": int(0.8 * 255),
+    "color": (255, 255, 255),
     "bold": 0,
     "layout": "raqm",
 }
@@ -936,15 +938,19 @@ if st.session_state.get("units"):
 
     if st.session_state.get("manual"):
         st.subheader("📋 Gemini မှာ ဘာသာပြန်ရန်")
+        # ---- ဘာသာစကား ရွေးချယ်မှု (မြန်မာ / ဂျာမနီ) ----
+        prompt_lang = st.radio("ဘာသာစကား", ["မြန်မာ", "ဂျာမနီ"], horizontal=True,
+                               key="prompt_lang",
+                               help="Gemini ကို ဘယ်ဘာသာနဲ့ ဘာသာပြန်ခိုင်းမလဲ")
         st.caption("① အောက်က စာသားကို Copy (ညာထောင့် icon) → ② Gemini app မှာ paste → "
                    "③ ရလဒ်ကို အောက်က ကွက်ထဲ paste → ④ Apply")
-        st.code(build_prompt(units), language=None)
+        st.code(build_prompt(units, prompt_lang), language=None)
         pasted = st.text_area("Gemini ရလဒ် ဒီမှာ paste", height=200, key="gem_paste",
-                              placeholder="[0] မြန်မာစာ...\n[1] မြန်မာစာ...")
+                              placeholder="[0] ဘာသာပြန်စာသား...\n[1] ဘာသာပြန်စာသား...")
         if st.button("✅ Apply (စာသား ဖြည့်)", use_container_width=True):
             got = parse_numbered(pasted, len(units))
             for i, t in got.items():
-                units[i]["my"] = clean_my(t)
+                units[i]["my"] = clean_text(t, prompt_lang)
             missing = [i for i in range(len(units)) if not units[i]["my"]]
             st.session_state["apply_msg"] = (
                 f"ဖြည့်ပြီး {len(got)}/{len(units)} ကြောင်း"
@@ -957,17 +963,16 @@ if st.session_state.get("units"):
     if st.button("2️⃣ အသံထုတ် + Video ပေါင်း", type="primary", use_container_width=True):
         wd, vdur = st.session_state["wd"], st.session_state["vdur"]
         src = os.path.join(wd, "src.mp4")
-        my_list = [clean_my(u["my"]) for u in units]
+        my_list = [clean_text(u["my"], st.session_state.get("prompt_lang", "မြန်မာ")) for u in units]
         n = len(units)
         empty = [i for i, t in enumerate(my_list) if not t.strip()]
         if empty:
-            st.error(f"မြန်မာစာသား မဖြည့်ရသေးတဲ့ စာကြောင်း: {empty[:20]}")
+            st.error(f"စာသား မဖြည့်ရသေးတဲ့ စာကြောင်း: {empty[:20]}")
             st.stop()
         try:
             T = {}
             t_all = time.time()
 
-            # ---------------- TTS (တစ်ပြိုင်နက်)
             vox = None
             if is_vox:
                 ref_path = None
@@ -984,7 +989,6 @@ if st.session_state.get("units"):
                 wav = f"{wd}/a{i:04d}.wav"
                 keyf = f"{wd}/a{i:04d}.key"
                 key = hashlib.md5(f"{sig_base}|{my_list[i]}".encode()).hexdigest()
-                # ---- Resume: အရင်အောင်ပြီးသား (စာသား/engine/voice မပြောင်း) ဆိုရင် ကျော်
                 if os.path.exists(wav) and os.path.exists(keyf):
                     try:
                         with open(keyf) as kf:
@@ -993,14 +997,13 @@ if st.session_state.get("units"):
                     except Exception:  # noqa: BLE001
                         pass
                 if vox is not None:
-                    # ---- VoxCPM သီးသန့် (Edge fallback မရှိ)
                     raw_audio = f"{wd}/a{i:04d}_raw.wav"
                     used = None
                     for attempt in range(vox_retry):
                         used = vox.synth(my_list[i], raw_audio)
                         if used:
                             break
-                        vox.reset()              # space ကို ပြန်စမ်းခွင့်ပေး
+                        vox.reset()
                         time.sleep(3)
                     if not used:
                         raise RuntimeError(
@@ -1008,7 +1011,6 @@ if st.session_state.get("units"):
                             "Edge TTS (Thiha) ကို မသုံးထားပါ။ Space sleep/queue ဖြစ်နေနိုင်လို့ "
                             "ခဏနေပြီး ပြန်စမ်းပါ။")
                 else:
-                    # ---- Edge TTS သီးသန့်
                     raw_audio = f"{wd}/a{i:04d}_raw.mp3"
                     for attempt in range(4):
                         try:
@@ -1020,7 +1022,7 @@ if st.session_state.get("units"):
                                     f"Edge TTS မအောင်မြင်ပါ (စာကြောင်း #{i}): {ex}\n\n{my_list[i]}")
                             time.sleep(1.5)
                 sh(["ffmpeg", "-y", "-i", raw_audio, "-af", TRIM, "-ar", "44100", "-ac", "1", wav])
-                with open(keyf, "w") as kf:      # အောင်မှ key သိမ်း
+                with open(keyf, "w") as kf:
                     kf.write(key)
                 return i, wav_dur(wav), vox is not None
 
@@ -1028,7 +1030,7 @@ if st.session_state.get("units"):
             vox_ok = 0
             workers = 1 if vox is not None else tts_workers
             t_a = time.time()
-            with st.status("🔊 မြန်မာအသံ ထုတ်နေတယ်...", expanded=True) as tst:
+            with st.status("🔊 အသံ ထုတ်နေတယ်...", expanded=True) as tst:
                 bar = st.progress(0.0)
                 done = 0
                 with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -1051,7 +1053,6 @@ if st.session_state.get("units"):
                     msg += f" (VoxCPM: {vox_ok}/{n})"
                 tst.update(label=msg, state="complete")
 
-            # ---------------- အသံ ပေါင်း
             t_a = time.time()
             lst = f"{wd}/alist.txt"
             with open(lst, "w") as f:
@@ -1061,7 +1062,6 @@ if st.session_state.get("units"):
             sh(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", allwav])
             T["🔗 အသံ ပေါင်း"] = time.time() - t_a
 
-            # ---------------- Smart Sync plan + Render (single pass)
             bounds = [0.0] + [(units[i]["end"] + units[i + 1]["start"]) / 2
                               for i in range(n - 1)] + [vdur]
             plan, cum = [], 0.0
