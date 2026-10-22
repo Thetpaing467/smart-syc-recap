@@ -1,4 +1,4 @@
-.[server]
+[server]
 maxUploadSize = 200
 enableXsrfProtection = true
 
