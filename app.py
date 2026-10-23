@@ -71,7 +71,7 @@ LANG_CONF = {
             "letters. Output exactly one line per input line in the format "
             "[number] German text -- same numbers, no extra comments.\n\n"
         ),
-        "font_keys": ("dejavu", "liberation", "notosans", "arial", "freesans"),
+        "font_keys": ("dejavusans", "dejavu", "liberation", "notosans", "arial", "freesans"),
         "clean": r"[^A-Za-zÄÖÜäöüß0-9\s.,!?\"'%\-]",
         "is_mm": False,
     },
@@ -94,8 +94,9 @@ LANG_CONF = {
             "no English/Chinese letters except kanji. Output exactly one line per input line "
             "in the format [number] Japanese text -- same numbers, no extra comments.\n\n"
         ),
-        "font_keys": ("notosansjp", "notosanscjk", "notosansjapanese", "takao", "ipag", "vl-gothic", "msgothic"),
-        "clean": r"[^\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF\uFF00-\uFFEF0-9\s.,!?\"'%\-]",
+        "font_keys": ("notosanscjk", "notosansjp", "notosansjapanese", "takao", "ipag", "vl-gothic", "msgothic"),
+        # FIX: \u3000-\u303F (。、「」 စတဲ့ CJK punctuation) ထည့်ထား
+        "clean": r"[^\u3000-\u303F\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF\uFF00-\uFFEF0-9\s.,!?\"'%\-]",
         "is_mm": False,
     },
 }
@@ -238,23 +239,48 @@ class VoxEngine:
 # ====================================================================
 # Font helpers
 # ====================================================================
+def _prefer_regular(paths):
+    """Regular ဖောင့်ကို ဦးစားပေး (Bold/Italic/Light မဟုတ်တာ)"""
+    def score(p):
+        b = os.path.basename(p).lower()
+        s = 0
+        if "regular" in b:
+            s -= 2
+        if any(x in b for x in ("bold", "italic", "light", "thin", "black", "medium", "mono", "serif")):
+            s += 2
+        return (s, len(b))
+    return sorted(paths, key=score)
+
+
 def find_font_for(lang="မြန်မာ"):
     here = os.path.dirname(os.path.abspath(__file__))
     conf = LANG_CONF.get(lang, LANG_CONF["မြန်မာ"])
 
+    repo = (glob.glob(os.path.join(here, "*.ttf")) + glob.glob(os.path.join(here, "*.otf")) +
+            glob.glob(os.path.join(here, "*.ttc")) +
+            glob.glob(os.path.join(here, "fonts", "*.ttf")) +
+            glob.glob(os.path.join(here, "fonts", "*.otf")) +
+            glob.glob(os.path.join(here, "fonts", "*.ttc")))
+
     if conf["is_mm"]:
+        # မြန်မာအတွက်: MyanmarPadaung.ttf ကို ဦးစားပေး၊ ပြီးရင် repo ထဲက ဘယ် font မဆို
         for name in ("MyanmarPadaung.ttf", "fonts/MyanmarPadaung.ttf"):
             pref = os.path.join(here, name)
             if os.path.exists(pref):
                 return pref
-    repo = glob.glob(os.path.join(here, "*.ttf")) + glob.glob(os.path.join(here, "*.otf")) + \
-        glob.glob(os.path.join(here, "fonts", "*.ttf")) + glob.glob(os.path.join(here, "fonts", "*.otf"))
-    if repo:
-        return repo[0]
+        if repo:
+            return repo[0]
+    else:
+        # FIX: ဂျပန်/ဂျာမန်အတွက် repo ထဲက font ကို နာမည် key ကိုက်မှပဲ သုံး
+        for key in conf["font_keys"]:
+            for f in _prefer_regular(repo):
+                if key in os.path.basename(f).lower():
+                    return f
 
-    sysf = glob.glob("/usr/share/fonts/**/*.ttf", recursive=True) + \
-        glob.glob("/usr/share/fonts/**/*.otf", recursive=True) + \
-        glob.glob("/usr/share/fonts/**/*.ttc", recursive=True)
+    sysf = (glob.glob("/usr/share/fonts/**/*.ttf", recursive=True) +
+            glob.glob("/usr/share/fonts/**/*.otf", recursive=True) +
+            glob.glob("/usr/share/fonts/**/*.ttc", recursive=True))
+    sysf = _prefer_regular(sysf)
     for key in conf["font_keys"]:
         for f in sysf:
             if key in os.path.basename(f).lower():
@@ -866,7 +892,7 @@ with st.expander("🔊 ဘာသာစကား + အသံ (Voice)", expanded=T
                                   type=["wav", "mp3", "m4a"])
         vox_retry = st.slider("VoxCPM ပြန်စမ်းအကြိမ် (စာကြောင်းတစ်ခုချင်း)", 1, 8, 4,
                               help="Space sleep/queue ဖြစ်ရင် ပြန်စမ်းမယ်။ ကုန်ရင် Edge မသုံးဘဲ error ပြမယ်")
-        st.caption("⚠️ VoxCPM က မြန်မာအသံသာ ကောင်းကောင်င် ထောက်ပံ့တယ်။ "
+        st.caption("⚠️ VoxCPM က မြန်မာအသံသာ ကောင်းကောင်း ထောက်ပံ့တယ်။ "
                    "ဂျာမနီ/ဂျပန် အတွက် Edge TTS ကို ပြောင်းသုံးပါ။")
 
 rate = f"{rate_n:+d}%"
