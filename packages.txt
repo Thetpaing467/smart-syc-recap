@@ -1,6 +1,5 @@
 ffmpeg
 libraqm0
-libgomp1
+fonts-dejavu-core
+fonts-noto-core
 fonts-noto-cjk
-fonts-dejavu
-fonts-padauk
