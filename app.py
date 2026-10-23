@@ -129,8 +129,8 @@ DEFAULTS = {
     "sub_size": 7.0,
     "sub_pos": 90,
     "use_neon": True,
-    "neon_th": 10,
-    "neon_speed": 0.4,
+    "neon_th": 3,       # ပုံသေ ထားပြီး
+    "neon_speed": 0.4,  # ပုံသေ ထားပြီး
     "zoom": 1.0,
 }
 for _lg, _c in LANG_CONF.items():
@@ -150,13 +150,11 @@ RANGES = {
     "max_speed": (1.0, 2.0, float), "max_min": (1, 120, int), "rate_n": (-50, 100, int),
     "tts_workers": (1, 10, int), "vox_retry": (1, 8, int), "sub_size": (3.0, 12.0, float),
     "sub_pos": (0, 100, int), "zoom": (1.0, 1.25, float),
-    "neon_th": (2, 40, int), "neon_speed": (0.1, 3.0, float),
 }
 BOOLS = {"fast_whisper", "use_sub", "use_neon"}
 
 
 def _coerce(k, v):
-    """valid ဖြစ်ရင် coerce လုပ်ပြီး ပြန်ပေး၊ မဟုတ်ရင် None"""
     if k in OPTS:
         return v if v in OPTS[k] else None
     if k in RANGES:
@@ -189,8 +187,6 @@ def check_cancel(job):
 
 
 class JobBar:
-    """st.progress နဲ့ အတူတူ .progress(f) ခေါ်လို့ရတဲ့ background-safe object"""
-
     def __init__(self, job, lo=0.0, hi=1.0):
         self.job, self.lo, self.hi = job, lo, hi
 
@@ -246,7 +242,7 @@ def clean_text(text, lang="မြန်မာ"):
 
 
 # ====================================================================
-# Background job registry (rerun ဖြစ်လည်း job မရပ်အောင်)
+# Background job registry
 # ====================================================================
 @st.cache_resource
 def get_registry():
@@ -284,7 +280,7 @@ def start_job(reg, jid, kind, target, *args):
 
 
 # ====================================================================
-# TTS : Edge TTS + VoxCPM (gradio_client)
+# TTS
 # ====================================================================
 def tts_edge(text, voice, rate, mp3, proxy=None):
     import edge_tts
@@ -564,13 +560,14 @@ def blend_overlay(fr, ov):
 
 
 # ====================================================================
-# Neon border
+# Neon border (Video Aspect Ratio အတိုင်း လိုက်လည်စေရန် ပြင်ထားသည်)
 # ====================================================================
 class Neon:
     BASE = np.array([12, 8, 10], np.float32)
     CYAN = np.array([255, 255, 0], np.float32)
     MAGENTA = np.array([110, 30, 255], np.float32)
     IDLE = 0.14
+    NBINS = 2048
 
     def __init__(self, W, H, th=10, speed=0.4, tail=0.5):
         self.W, self.H, self.speed, self.tail = W, H, speed, tail
@@ -581,31 +578,32 @@ class Neon:
         ys, xs = np.nonzero(ring)
         dt, db, dl, dr = ys, H - 1 - ys, xs, W - 1 - xs
         m = np.minimum.reduce([dt, db, dl, dr])
+        
         S = np.where(m == dt, xs,
             np.where(m == dr, W + ys,
             np.where(m == db, 2 * W + H + (W - xs),
-                     2 * W + 2 * H - ys))).astype(np.int64)
+                     2 * W + 2 * H - ys))).astype(np.float64)
+                     
         self.ys, self.xs = ys, xs
-        self.Si = S % self.P
-        self.P_arr = np.arange(self.P, dtype=np.float32)
+        self.Sf = ((S % self.P) / float(self.P)).astype(np.float32)
+        self.L = np.arange(self.NBINS, dtype=np.float32) / float(self.NBINS)
+        self.idx = np.clip((self.Sf * self.NBINS).astype(np.int32), 0, self.NBINS - 1)
 
     def _layer(self, h, color):
-        P = self.P
-        dist = (h - self.P_arr) % P
-        a = np.clip(1.0 - dist / (self.tail * P), 0, 1)
+        dist = (h - self.L) % 1.0
+        a = np.clip(1.0 - dist / self.tail, 0, 1)
         glow = self.IDLE + (1.0 - self.IDLE) * (a ** 0.55)
-        core = np.clip(1.0 - dist / (0.06 * P), 0, 1) ** 2
+        core = np.clip(1.0 - dist / 0.06, 0, 1) ** 2
         return color * glow[:, None] + 255.0 * 0.9 * core[:, None]
 
     def apply(self, fr, t):
-        head = (t * self.speed * self.P / 4.0) % self.P
-        c = self.BASE + self._layer(head, self.CYAN) + self._layer(head + self.P / 2, self.MAGENTA)
+        head = (t * self.speed) % 1.0
+        c = self.BASE + self._layer(head, self.CYAN) + self._layer(head + 0.5, self.MAGENTA)
         strip = np.clip(c, 0, 255).astype(np.uint8)
-        fr[self.ys, self.xs] = strip[self.Si]
+        fr[self.ys, self.xs] = strip[self.idx]
 
 
 def zoom_flip(fr, zoom, flip):
-    """အမြဲ array အသစ် ပြန်ပေး (ဒါကြောင့် producer က copy() မလိုတော့ဘူး)"""
     zoomed = zoom > 1.001
     if zoomed:
         H, W = fr.shape[:2]
@@ -617,16 +615,53 @@ def zoom_flip(fr, zoom, flip):
     return fr if zoomed else fr.copy()
 
 
+# မူရင်း Video ရဲ့ အနက်ရောင်ဘောင် (Letterbox) ကို ဖြတ်ထုတ်ဖို့ Helper
+def auto_crop_video(src, dst, target_h):
+    cap = cv2.VideoCapture(src)
+    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    ok, frame = cap.read()
+    cap.release()
+    if not ok:
+        return w, h, 0, 0
+    
+    # ဘောင် ဖြတ်ဖို့ အနက်ရောင်ကို ရှာမယ်
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(gray, 30, 100)
+    rows = np.where(edges.any(axis=1))[0]
+    if len(rows) > 0:
+        y0, y1 = rows[0], rows[-1] + 1
+        # အနည်းဆုံး 5px ကနေ စဖြတ်မယ်
+        if y0 < 5: y0 = 0
+        if h - y1 < 5: y1 = h
+        cw = w
+        ch = y1 - y0
+        if ch < h * 0.95: # သိသိသာသာ ဖြတ်ရမယ်ဆိုရင်
+            scale = target_h / ch
+            new_w = int(round(cw * scale / 2) * 2) # စုံဂဏန်းဖြစ်ရမယ်
+            new_h = int(target_h)
+            vf = f"crop={cw}:{ch}:0:{y0},scale={new_w}:{new_h}"
+            subprocess.run(["ffmpeg", "-y", "-i", src, "-vf", vf, "-c:v", "libx264", "-preset", "ultrafast", "-crf", "26", "-c:a", "copy", dst], capture_output=True)
+            return new_w, new_h, cw, ch
+    # မဖြတ်ရင် ရိုးရိုး resize
+    new_w = int(round(w * target_h / h / 2) * 2)
+    new_h = int(target_h)
+    subprocess.run(["ffmpeg", "-y", "-i", src, "-vf", f"scale={new_w}:{new_h}", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "26", "-c:a", "copy", dst], capture_output=True)
+    return new_w, new_h, w, h
+
+
 def render_final(src, audio, out, plan, total, height, subs, font_path, fs_pct, pos_y,
                  neon_on, neon_th, neon_speed, flip, zoom, style=None, preset="ultrafast",
                  progress=None, fps_out=30, is_mm=True, cancel=None):
     style = style or {}
-    cap = cv2.VideoCapture(src)
+    
+    # ဗီဒီယိုကို အနက်ရောင်ဘောင် ဖြတ်ပြီး resize လုပ်မယ်
+    temp_vid = out + "_cropped.mp4"
+    W, H, _, _ = auto_crop_video(src, temp_vid, height)
+    
+    cap = cv2.VideoCapture(temp_vid)
     sfps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-    w0, h0 = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     stotal = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 10 ** 9
-    H = int(height)
-    W = int(round(w0 * H / h0 / 2) * 2)
     nfr = max(1, int(round(total * fps_out)))
     fs = max(16, int(W * fs_pct / 100))
     neon = Neon(W, H, neon_th, neon_speed) if neon_on else None
@@ -670,7 +705,7 @@ def render_final(src, audio, out, plan, total, height, subs, font_path, fs_pct, 
                         last = f
                 if last is None:
                     return
-                put(last)  # consumer က မပြင်ဘူး (zoom_flip က copy ယူတယ်)
+                put(last)
         finally:
             put(None)
 
@@ -733,6 +768,10 @@ def render_final(src, audio, out, plan, total, height, subs, font_path, fs_pct, 
         except Exception:
             pass
         log.close()
+        
+    if os.path.exists(temp_vid):
+        os.remove(temp_vid)
+        
     if proc.returncode != 0:
         with open(log_path, "rb") as f:
             tail = f.read()[-800:].decode("utf-8", "ignore")
@@ -744,18 +783,22 @@ def render_final(src, audio, out, plan, total, height, subs, font_path, fs_pct, 
 
 def make_preview(path, height, text, font_path, fs_pct, pos_y, neon_on, neon_th,
                  neon_speed, flip, zoom, style=None, is_mm=True):
-    cap = cv2.VideoCapture(path)
+    temp_vid = path + "_pv.mp4"
+    W, H, _, _ = auto_crop_video(path, temp_vid, height)
+    
+    cap = cv2.VideoCapture(temp_vid)
     cap.set(cv2.CAP_PROP_POS_MSEC, 1000)
     ok, fr = cap.read()
     if not ok:
         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
         ok, fr = cap.read()
     cap.release()
+    if os.path.exists(temp_vid):
+        os.remove(temp_vid)
+        
     if not ok:
         return None
-    h0, w0 = fr.shape[:2]
-    W = int(round(w0 * height / h0 / 2) * 2)
-    H = int(height)
+        
     fr = cv2.resize(fr, (W, H))
     fr = zoom_flip(fr, zoom, flip)
     if neon_on:
@@ -777,7 +820,7 @@ def cached_preview(path, fsize, height, text, font_path, fs_pct, pos_y, neon_on,
 
 
 # ====================================================================
-# Manual translate helpers (Gemini app မှာ copy-paste)
+# Manual translate helpers
 # ====================================================================
 def build_prompt(units, lang="မြန်မာ"):
     lines = "\n".join(f"[{i}] {u['src']}" for i, u in enumerate(units))
@@ -972,7 +1015,7 @@ def run_whisper(job, wm, audio, lang, fast, vdur, bar):
         except Cancelled:
             raise
         except Exception:
-            raw = []  # batch မရရင် ပုံမှန်နည်းနဲ့ ပြန်လုပ်
+            raw = []
     segs, info = wm.transcribe(audio, language=lang, vad_filter=True, beam_size=1,
                                temperature=0.0, condition_on_previous_text=False)
     for s in segs:
@@ -1274,7 +1317,6 @@ def cleanup_after_download():
 
 
 def full_reset():
-    """အသစ်ပြန်စ: video + link + အားလုံး ရှင်း"""
     reset_job()
     cleanup_uploads()
     _clear_link_input()
@@ -1299,7 +1341,6 @@ def save_upload(up):
 
 
 def consume_job(reg, jid):
-    """ပြီးသွားတဲ့ background job ရဲ့ ရလဒ်ကို session ထဲ ယူ"""
     job = reg["jobs"].get(jid)
     if not job or job["state"] == "running" or job.get("consumed"):
         return
@@ -1433,15 +1474,9 @@ with st.expander("🎨 စာတန်း (PNG) + Neon", expanded=False):
     sub_size = c5.slider("စာအရွယ် (% of width)", 3.0, 12.0, step=0.5, key="sub_size")
     sub_pos = c6.slider("နေရာ (0=အပေါ် 100=အောက်)", 0, 100, step=1, key="sub_pos")
     use_neon = st.toggle("Neon border", key="use_neon")
-    if use_neon:
-        cn1, cn2 = st.columns(2)
-        neon_th = cn1.slider("Neon အထူ (px)", 2, 40, step=1, key="neon_th",
-                             help="ဘောင်အထူ။ 1080p မှာ 10~14 ကောင်းတယ်")
-        neon_speed = cn2.slider("Neon အလျင်း (speed)", 0.1, 3.0, step=0.1, key="neon_speed",
-                                help="အလင်းရောင် လှည့်ပတ်မှု အလျင်း")
-    else:
-        neon_th = st.session_state["neon_th"]
-        neon_speed = st.session_state["neon_speed"]
+    # ✅ Neon အထူ / Speed ကို ပုံသေ ထားတယ် (slider မပြ)
+    neon_th = 3
+    neon_speed = 0.4
     zoom = st.slider("Zoom", 1.0, 1.25, step=0.01, key="zoom")
     font_path = find_font_for(voice_lang)
     if not font_path:
