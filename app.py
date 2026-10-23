@@ -12,7 +12,7 @@ import subprocess
 import tempfile
 import threading
 import traceback
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait as fut_wait
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 import cv2
@@ -29,6 +29,7 @@ VOX_SPACES = [
     {"space": "hgghfhjfhjguyjf/Voxcpm-Burmese-Tts", "type": "burmese"},
 ]
 
+# PyAV မရတဲ့အခါ fallback သုံးမယ့် ffmpeg trim filter
 TRIM = (
     "silenceremove=start_periods=1:start_threshold=-50dB,areverse,"
     "silenceremove=start_periods=1:start_threshold=-50dB,areverse,apad=pad_dur=0.2"
@@ -366,6 +367,60 @@ class VoxEngine:
 
 
 # ====================================================================
+# Audio : PyAV နဲ့ process မလွှတ်ဘဲ decode + numpy နဲ့ silence trim
+# ====================================================================
+def _as_list(x):
+    if x is None:
+        return []
+    if isinstance(x, (list, tuple)):
+        return list(x)
+    return [x]
+
+
+def decode_audio(path, sr=44100):
+    """mp3/wav → mono int16 numpy (PyAV ပါတဲ့ faster-whisper နဲ့အတူ ပါလာတယ်)"""
+    import av
+    chunks = []
+    with av.open(path) as ct:
+        stream = ct.streams.audio[0]
+        rs = av.AudioResampler(format="s16", layout="mono", rate=sr)
+        for frame in ct.decode(stream):
+            for rf in _as_list(rs.resample(frame)):
+                chunks.append(rf.to_ndarray().reshape(-1))
+        try:
+            for rf in _as_list(rs.resample(None)):
+                chunks.append(rf.to_ndarray().reshape(-1))
+        except Exception:
+            pass
+    if not chunks:
+        raise RuntimeError("audio decode: empty")
+    return np.concatenate(chunks).astype(np.int16)
+
+
+def trim_to_wav(raw_audio, wav, sr=44100):
+    """အရှေ့/အနောက် silence ဖြတ် + 0.2s အနောက်ထပ်ထည့် → 44.1k mono wav"""
+    try:
+        arr = decode_audio(raw_audio, sr)
+        thr = 32768.0 * (10 ** (-50 / 20.0))
+        idx = np.nonzero(np.abs(arr.astype(np.int32)) > thr)[0]
+        if len(idx):
+            i0 = max(0, int(idx[0]) - int(0.02 * sr))
+            i1 = min(len(arr), int(idx[-1]) + int(0.04 * sr))
+            arr = arr[i0:i1]
+        else:
+            arr = arr[:int(0.1 * sr)]
+        arr = np.concatenate([arr, np.zeros(int(0.2 * sr), np.int16)])
+        with wave.open(wav, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(sr)
+            w.writeframes(arr.tobytes())
+    except Exception:
+        # PyAV မရ/ပျက်ရင် ffmpeg နဲ့ ပြန်လုပ်
+        sh(["ffmpeg", "-y", "-i", raw_audio, "-af", TRIM, "-ar", str(sr), "-ac", "1", wav])
+
+
+# ====================================================================
 # Font helpers
 # ====================================================================
 def _prefer_regular(paths):
@@ -626,10 +681,10 @@ def zoom_flip(fr, zoom, flip):
 
 
 # ====================================================================
-# FAST RENDER : ffmpeg အပြည့် (Python က frame တစ်ခုချင်း မထိတော့ဘူး)
-#   1) အပိုင်းတစ်ခုချင်း (speed/zoom/flip/scale) ကို parallel encode
-#   2) concat
-#   3) neon loop + စာတန်း PNG ကို overlay + audio တစ်ခါတည်း
+# FAST RENDER
+#   A) Source ကို output height အရွယ် တစ်ခါပဲ ချုံ့ (ensure_small)
+#   B) TTS ပြီးတဲ့ စာကြောင်းတွေ ရှေ့ကနေ segment encode ချက်ချင်းစ (SegPipeline)
+#   C) neon loop + စာတန်း PNG + audio ကို final pass တစ်ခါတည်း
 # ====================================================================
 def _probe_wh(path):
     out = sh(["ffprobe", "-v", "error", "-select_streams", "v:0",
@@ -640,6 +695,113 @@ def _probe_wh(path):
 
 def _q(path):
     return path.replace("'", "'\\''")
+
+
+_SMALL_LOCKS = {}
+_SMALL_GUARD = threading.Lock()
+
+
+def ensure_small(src, wd, height):
+    """Source က output height ထက်ကြီးရင် တစ်ခါပဲ ချုံ့ထား (keyframe ကြပ်ပေး → seek မြန်)။
+    လိုမလိုတွက်ပြီး မလိုရင်/မအောင်မြင်ရင် မူရင်း src ကိုပဲ ပြန်ပေး"""
+    H = int(height)
+    try:
+        _w0, h0 = _probe_wh(src)
+    except Exception:
+        return src
+    if h0 <= H:
+        return src
+    out = os.path.join(wd, f"src_{H}.mp4")
+    with _SMALL_GUARD:
+        lk = _SMALL_LOCKS.setdefault(out, threading.Lock())
+    with lk:
+        if os.path.exists(out) and os.path.getsize(out) > 1024:
+            return out
+        part = out + ".part.mp4"
+        try:
+            sh(["ffmpeg", "-y", "-loglevel", "error", "-i", src, "-an",
+                "-vf", f"scale=-2:{H}", "-c:v", "libx264", "-preset", "ultrafast",
+                "-crf", "20", "-pix_fmt", "yuv420p", "-g", "30", "-threads", "0", part])
+            os.replace(part, out)
+            return out
+        except Exception:
+            try:
+                os.remove(part)
+            except Exception:
+                pass
+            return src
+
+
+class SegPipeline:
+    """Segment တစ်ခုချင်းကို background pool မှာ encode။ submit() ကို အချိန်မရွေး ခေါ်လို့ရ"""
+
+    def __init__(self, get_src, tmp, W, H, fps, zoom, flip, preset, crf, vdur, cancel=None):
+        self.get_src, self.tmp = get_src, tmp
+        self.W, self.H, self.fps = W, H, fps
+        self.preset, self.crf, self.vdur, self.cancel = preset, crf, vdur, cancel
+        ncpu = os.cpu_count() or 4
+        self.workers = max(1, min(4, ncpu))
+        self.thr = max(1, ncpu // self.workers)
+        self.pool = ThreadPoolExecutor(max_workers=self.workers)
+        self.futs, self.segs, self.done = [], {}, 0
+        self.lock = threading.Lock()
+        tail = []
+        if zoom > 1.001:
+            tail.append(f"crop=trunc(iw/{zoom:.4f}/2)*2:trunc(ih/{zoom:.4f}/2)*2")
+        tail.append(f"scale={W}:{H}")
+        if flip:
+            tail.append("hflip")
+        self.vf_tail = tail
+
+    def submit(self, i, s0, span, spd, nfr):
+        if nfr <= 0:
+            return
+        self.futs.append(self.pool.submit(self._do, i, s0, span, spd, nfr))
+
+    def _do(self, i, s0, span, spd, nfr):
+        if self.cancel:
+            self.cancel()
+        src = self.get_src()
+        s0c = max(0.0, min(s0, self.vdur - 0.1))
+        seg = os.path.join(self.tmp, f"seg{i:05d}.mp4")
+        vf = ",".join([f"setpts=(PTS-STARTPTS)/{spd:.6f}", f"fps={self.fps}",
+                       "tpad=stop_mode=clone:stop_duration=20"] + self.vf_tail)
+        sh(["ffmpeg", "-y", "-loglevel", "error",
+            "-ss", f"{s0c:.3f}", "-t", f"{span + 0.05:.3f}", "-i", src,
+            "-an", "-vf", vf, "-frames:v", str(nfr), "-r", str(self.fps),
+            "-c:v", "libx264", "-preset", self.preset, "-crf", self.crf,
+            "-pix_fmt", "yuv420p", "-g", str(self.fps * 2), "-threads", str(self.thr), seg])
+        with self.lock:
+            self.segs[i] = seg
+            self.done += 1
+
+    def check(self):
+        for fu in self.futs:
+            if fu.done() and not fu.cancelled():
+                ex = fu.exception()
+                if ex:
+                    raise ex
+
+    def wait_all(self, on_tick=None):
+        while True:
+            self.check()
+            pending = [f for f in self.futs if not f.done()]
+            if not pending:
+                break
+            fut_wait(pending, timeout=0.5)
+            if on_tick:
+                on_tick()
+            if self.cancel:
+                self.cancel()
+        self.check()
+
+    def shutdown(self):
+        for fu in self.futs:
+            fu.cancel()
+        try:
+            self.pool.shutdown(wait=False)
+        except Exception:
+            pass
 
 
 def _run_ff_progress(cmd, total, cb=None, cancel=None, log_path=None):
@@ -740,141 +902,74 @@ def _make_sub_list(subs, total, W, H, font_path, fs, pos_y, style, is_mm, tmp):
     return lst
 
 
-def render_final(src, audio, out, plan, total, height, subs, font_path, fs_pct, pos_y,
-                 neon_on, neon_th, neon_speed, flip, zoom, style=None, preset="ultrafast",
-                 progress=None, fps_out=30, is_mm=True, cancel=None):
+def finalize_render(pipe, audio, out, total, W, H, fps, subs, font_path, fs, pos_y,
+                    neon_on, neon_th, neon_speed, style, preset, is_mm, tmp,
+                    progress=None, cancel=None):
+    """Segment တွေ ပြီးပြီဆိုမှ ခေါ် → concat + neon + စာတန်း + audio တစ်ခါတည်း"""
     style = style or {}
-    fps = int(fps_out)
-    w0, h0 = _probe_wh(src)
-    H = int(height)
-    W = int(round(w0 * H / h0 / 2) * 2)
-    fs = max(16, int(W * fs_pct / 100))
-    vdur = dur(src)
     use_subs = bool(subs and font_path)
     need_overlay = bool(neon_on or use_subs)
-
-    tmp = out + "_parts"
-    shutil.rmtree(tmp, ignore_errors=True)
-    os.makedirs(tmp, exist_ok=True)
 
     def prog(f):
         if progress:
             progress.progress(f)
 
-    try:
-        # ---------- 1) အပိုင်းတစ်ခုချင်း encode (parallel) ----------
-        n = len(plan)
-        fb = [int(round(plan[i][0] * fps)) for i in range(n)] + [int(round(total * fps))]
-        jobs = []
-        for i, (cs, d, s0, spd) in enumerate(plan):
-            nfr = fb[i + 1] - fb[i]
-            if nfr <= 0:
-                continue
-            span = d * spd
-            s0c = max(0.0, min(s0, vdur - 0.1))
-            jobs.append((i, s0c, span, spd, nfr))
+    if not pipe.segs:
+        raise RuntimeError("Video အပိုင်း မထွက်ပါ")
+    seglist = os.path.join(tmp, "segs.txt")
+    with open(seglist, "w") as f:
+        for i in sorted(pipe.segs):
+            f.write(f"file '{_q(pipe.segs[i])}'\n")
 
-        ncpu = os.cpu_count() or 4
-        workers = max(1, min(4, ncpu))
-        thr = max(1, ncpu // workers)
-        seg_preset = preset
-        seg_crf = "20" if need_overlay else "27"
+    log_path = out + ".log"
+    base = ["ffmpeg", "-y", "-loglevel", "error", "-progress", "pipe:1", "-nostats"]
 
-        vf_tail = []
-        if zoom > 1.001:
-            vf_tail.append(f"crop=trunc(iw/{zoom:.4f}/2)*2:trunc(ih/{zoom:.4f}/2)*2")
-        vf_tail.append(f"scale={W}:{H}")
-        if flip:
-            vf_tail.append("hflip")
+    if not need_overlay:
+        cmd = base + ["-f", "concat", "-safe", "0", "-i", seglist, "-i", audio,
+                      "-map", "0:v", "-map", "1:a:0", "-c:v", "copy",
+                      "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart",
+                      "-t", f"{total:.3f}", out]
+    else:
+        inputs = ["-f", "concat", "-safe", "0", "-i", seglist, "-i", audio]
+        idx = 2
+        filt = []
+        cur = "[0:v]"
 
-        def do_seg(job_):
-            i, s0c, span, spd, nfr = job_
-            if cancel:
-                cancel()
-            seg = os.path.join(tmp, f"seg{i:05d}.mp4")
-            vf = ",".join([f"setpts=(PTS-STARTPTS)/{spd:.6f}", f"fps={fps}",
-                           "tpad=stop_mode=clone:stop_duration=20"] + vf_tail)
-            sh(["ffmpeg", "-y", "-loglevel", "error",
-                "-ss", f"{s0c:.3f}", "-t", f"{span + 0.05:.3f}", "-i", src,
-                "-an", "-vf", vf, "-frames:v", str(nfr), "-r", str(fps),
-                "-c:v", "libx264", "-preset", seg_preset, "-crf", seg_crf,
-                "-pix_fmt", "yuv420p", "-g", str(fps * 2), "-threads", str(thr), seg])
-            return i, seg
+        if neon_on:
+            neon_mp4 = os.path.join(tmp, "neon.mp4")
+            mask_png = os.path.join(tmp, "mask.png")
+            _make_neon_loop(neon_mp4, mask_png, W, H, neon_th, neon_speed, fps)
+            inputs += ["-stream_loop", "-1", "-i", neon_mp4,
+                       "-loop", "1", "-framerate", str(fps), "-i", mask_png]
+            filt.append(f"[{idx + 1}:v]format=gray[m]")
+            filt.append(f"[{idx}:v][m]alphamerge[nn]")
+            filt.append(f"{cur}[nn]overlay=0:0:format=auto:shortest=1[v1]")
+            cur = "[v1]"
+            idx += 2
 
-        segs = {}
-        done = 0
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            futs = [pool.submit(do_seg, j) for j in jobs]
-            try:
-                for fu in as_completed(futs):
-                    i_, p_ = fu.result()
-                    segs[i_] = p_
-                    done += 1
-                    prog(0.7 * done / max(1, len(jobs)))
-                    if cancel:
-                        cancel()
-            except BaseException:
-                for f_ in futs:
-                    f_.cancel()
-                raise
+        if use_subs:
+            sublist = _make_sub_list(subs, total, W, H, font_path, fs, pos_y,
+                                     style, is_mm, tmp)
+            if sublist:
+                inputs += ["-f", "concat", "-safe", "0", "-i", sublist]
+                filt.append(f"[{idx}:v]fps={fps},format=rgba[sb]")
+                filt.append(f"{cur}[sb]overlay=0:0:format=auto:eof_action=pass[v2]")
+                cur = "[v2]"
+                idx += 1
 
-        seglist = os.path.join(tmp, "segs.txt")
-        with open(seglist, "w") as f:
-            for i in sorted(segs):
-                f.write(f"file '{_q(segs[i])}'\n")
-
-        # ---------- 2) Final pass ----------
-        log_path = out + ".log"
-        base = ["ffmpeg", "-y", "-loglevel", "error", "-progress", "pipe:1", "-nostats"]
-
-        if not need_overlay:
-            cmd = base + ["-f", "concat", "-safe", "0", "-i", seglist, "-i", audio,
-                          "-map", "0:v", "-map", "1:a:0", "-c:v", "copy",
-                          "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart",
-                          "-t", f"{total:.3f}", out]
+        cmd = base + inputs
+        if filt:
+            cmd += ["-filter_complex", ";".join(filt), "-map", cur]
         else:
-            inputs = ["-f", "concat", "-safe", "0", "-i", seglist, "-i", audio]
-            idx = 2
-            filt = []
-            cur = "[0:v]"
+            cmd += ["-map", "0:v"]
+        cmd += ["-map", "1:a:0",
+                "-c:v", "libx264", "-preset", preset, "-crf", "27", "-pix_fmt", "yuv420p",
+                "-threads", "0", "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart",
+                "-t", f"{total:.3f}", out]
 
-            if neon_on:
-                neon_mp4 = os.path.join(tmp, "neon.mp4")
-                mask_png = os.path.join(tmp, "mask.png")
-                _make_neon_loop(neon_mp4, mask_png, W, H, neon_th, neon_speed, fps)
-                inputs += ["-stream_loop", "-1", "-i", neon_mp4,
-                           "-loop", "1", "-framerate", str(fps), "-i", mask_png]
-                filt.append(f"[{idx + 1}:v]format=gray[m]")
-                filt.append(f"[{idx}:v][m]alphamerge[nn]")
-                filt.append(f"{cur}[nn]overlay=0:0:format=auto:shortest=1[v1]")
-                cur = "[v1]"
-                idx += 2
-
-            if use_subs:
-                sublist = _make_sub_list(subs, total, W, H, font_path, fs, pos_y,
-                                         style, is_mm, tmp)
-                if sublist:
-                    inputs += ["-f", "concat", "-safe", "0", "-i", sublist]
-                    filt.append(f"[{idx}:v]fps={fps},format=rgba[sb]")
-                    filt.append(f"{cur}[sb]overlay=0:0:format=auto:eof_action=pass[v2]")
-                    cur = "[v2]"
-                    idx += 1
-
-            cmd = base + inputs
-            if filt:
-                cmd += ["-filter_complex", ";".join(filt), "-map", cur]
-            else:
-                cmd += ["-map", "0:v"]
-            cmd += ["-map", "1:a:0",
-                    "-c:v", "libx264", "-preset", preset, "-crf", "27", "-pix_fmt", "yuv420p",
-                    "-threads", "0", "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart",
-                    "-t", f"{total:.3f}", out]
-
-        _run_ff_progress(cmd, total, lambda f: prog(0.7 + 0.3 * f), cancel, log_path)
-        prog(1.0)
-        return out
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+    _run_ff_progress(cmd, total, prog, cancel, log_path)
+    prog(1.0)
+    return out
 
 
 def make_preview(path, height, text, font_path, fs_pct, pos_y, neon_on, neon_th,
@@ -1169,14 +1264,63 @@ def job_whisper(job, reg, wd, vid_path, P):
         "info": f"ဘာသာစကား: {info.language} ({info.language_probability:.0%}) · အပိုင်း {len(units)} ခု",
     }
 
+    # Whisper ပြီးပြီ → user က Gemini မှာ ဘာသာပြန်နေတဲ့ အချိန်မှာ source ကို ချုံ့ထားမယ်
+    threading.Thread(target=ensure_small, args=(src, wd, P.get("height", 480)),
+                     daemon=True).start()
+
 
 def job_render(job, wd, src, units, my_list, vdur, P):
     n = len(units)
     T = {}
     t_all = time.time()
+    cancel_fn = lambda: check_cancel(job)
 
     vox = VoxEngine(P["ref_path"], P["hf_token"]) if P["is_vox"] else None
     sig_base = f"{P['engine']}|{P['voice']}|{P['rate']}|{P['ref_sig']}"
+
+    # ---- Render ကြိုတွက် (TTS မပြီးခင် segment encode စနိုင်အောင်) ----
+    fps = int(P["fps_out"])
+    H = int(P["height"])
+    w0, h0 = _probe_wh(src)
+    W = int(round(w0 * H / h0 / 2) * 2)
+    fs = max(16, int(W * P["sub_size"] / 100))
+    use_subs = bool(P["use_sub"] and P["font_path"])
+    need_overlay = bool(P["use_neon"] or use_subs)
+    max_speed = float(P["max_speed"])
+
+    tmp = os.path.join(wd, "render_parts")
+    shutil.rmtree(tmp, ignore_errors=True)
+    os.makedirs(tmp, exist_ok=True)
+
+    small_pool = ThreadPoolExecutor(max_workers=1)
+    small_fut = small_pool.submit(ensure_small, src, wd, H)   # TTS နဲ့ အပြိုင် ချုံ့
+    pipe = SegPipeline(lambda: small_fut.result(), tmp, W, H, fps, P["zoom"], P["flip"],
+                       P["preset"], "20" if need_overlay else "27", vdur, cancel_fn)
+
+    bounds = [0.0] + [(units[i]["end"] + units[i + 1]["start"]) / 2
+                      for i in range(n - 1)] + [vdur]
+
+    durs = [0.0] * n
+    ready = [False] * n
+    plan = []
+    state = {"nxt": 0, "cum": 0.0}
+
+    def advance():
+        """ရှေ့ဆုံးကစ အဆက်မပြတ် အသံပြီးနေတဲ့ စာကြောင်းတွေရဲ့ segment ကို encode တန်း"""
+        while state["nxt"] < n and ready[state["nxt"]]:
+            i = state["nxt"]
+            cum = state["cum"]
+            s_, e_ = bounds[i], bounds[i + 1]
+            w = max(e_ - s_, 0.2)
+            d = max(durs[i], 0.05)
+            w_use = d * max_speed if w / d > max_speed else w
+            spd = w_use / d
+            f0 = int(round(cum * fps))
+            f1 = int(round((cum + d) * fps))
+            plan.append((cum, d, s_, spd))
+            pipe.submit(i, s_, w_use, spd, f1 - f0)
+            state["cum"] = cum + d
+            state["nxt"] = i + 1
 
     def do_line(i):
         check_cancel(job)
@@ -1216,81 +1360,87 @@ def job_render(job, wd, src, units, my_list, vdur, P):
                         raise RuntimeError(
                             f"Edge TTS မအောင်မြင်ပါ (စာကြောင်း #{i}): {ex}\n\n{my_list[i]}")
                     time.sleep(1.5)
-        sh(["ffmpeg", "-y", "-i", raw_audio, "-af", TRIM, "-ar", "44100", "-ac", "1", wav])
+        trim_to_wav(raw_audio, wav)
         with open(keyf, "w") as kf:
             kf.write(key)
         return i, wav_dur(wav), vox is not None
 
-    durs = [0.0] * n
-    vox_ok, done = 0, 0
-    workers = 1 if vox is not None else P["tts_workers"]
-    t_a = time.time()
-    job["label"] = f"🔊 အသံ ထုတ်နေတယ် 0/{n}"
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futs = [pool.submit(do_line, i) for i in range(n)]
-        try:
-            for fu in as_completed(futs):
-                i_, d_, u_ = fu.result()
-                durs[i_] = d_
-                vox_ok += 1 if u_ else 0
-                done += 1
-                job["frac"] = 0.2 * done / n
-                job["label"] = f"🔊 အသံ ထုတ်နေတယ် {done}/{n}"
-        except BaseException:
-            for f_ in futs:
-                f_.cancel()
-            raise
-    T["🔊 အသံထုတ် (TTS)"] = time.time() - t_a
+    def progress_tick(tts_done):
+        job["frac"] = 0.7 * (0.5 * tts_done / n + 0.5 * pipe.done / n)
+        job["label"] = f"🔊 အသံ {tts_done}/{n} · 🎬 အပိုင်း encode {pipe.done}/{n}"
 
-    check_cancel(job)
-    t_a = time.time()
-    job["label"] = "🔗 အသံ ပေါင်းနေတယ်..."
-    lst = f"{wd}/alist.txt"
-    with open(lst, "w") as f:
-        for i in range(n):
-            f.write(f"file '{wd}/a{i:04d}.wav'\n")
-    allwav = f"{wd}/all.wav"
-    sh(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", allwav])
-    T["🔗 အသံ ပေါင်း"] = time.time() - t_a
+    try:
+        vox_ok, done = 0, 0
+        workers = 1 if vox is not None else P["tts_workers"]
+        t_a = time.time()
+        progress_tick(0)
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futs = [pool.submit(do_line, i) for i in range(n)]
+            try:
+                for fu in as_completed(futs):
+                    i_, d_, u_ = fu.result()
+                    durs[i_] = d_
+                    ready[i_] = True
+                    vox_ok += 1 if u_ else 0
+                    done += 1
+                    advance()
+                    pipe.check()
+                    progress_tick(done)
+            except BaseException:
+                for f_ in futs:
+                    f_.cancel()
+                raise
+        T["🔊 အသံထုတ် (TTS + segment encode အပြိုင်)"] = time.time() - t_a
 
-    bounds = [0.0] + [(units[i]["end"] + units[i + 1]["start"]) / 2
-                      for i in range(n - 1)] + [vdur]
-    plan, cum = [], 0.0
-    for i in range(n):
-        s_, e_ = bounds[i], bounds[i + 1]
-        w = max(e_ - s_, 0.2)
-        d = max(durs[i], 0.05)
-        w_use = d * P["max_speed"] if w / d > P["max_speed"] else w
-        plan.append((cum, d, s_, w_use / d))
-        cum += d
+        check_cancel(job)
+        advance()
+        if state["nxt"] != n:
+            raise RuntimeError("အသံ အားလုံး မပြည့်စုံပါ")
+        cum = state["cum"]
 
-    subs, t0 = [], 0.0
-    if P["use_sub"]:
-        for i in range(n):
-            parts = split_for_sub(my_list[i], lang=P["voice_lang"])
-            tot = sum(len(p) for p in parts) or 1
-            cur = t0
-            for p in parts:
-                dd = durs[i] * len(p) / tot
-                subs.append((cur, cur + dd, p))
-                cur += dd
-            t0 += durs[i]
+        t_a = time.time()
+        job["label"] = "🔗 အသံ ပေါင်းနေတယ်..."
+        lst = f"{wd}/alist.txt"
+        with open(lst, "w") as f:
+            for i in range(n):
+                f.write(f"file '{wd}/a{i:04d}.wav'\n")
+        allwav = f"{wd}/all.wav"
+        sh(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", allwav])
+        T["🔗 အသံ ပေါင်း"] = time.time() - t_a
 
-    t_a = time.time()
-    job["label"] = "🎬 Video render (ffmpeg parallel + စာတန်း + Neon)..."
-    job["frac"] = 0.2
-    final = f"{wd}/final.mp4"
-    render_final(src, allwav, final, plan, cum, P["height"], subs,
-                 P["font_path"] if P["use_sub"] else None, P["sub_size"], P["sub_pos"],
-                 P["use_neon"], P["neon_th"], P["neon_speed"], P["flip"], P["zoom"],
-                 P["sub_style"], preset=P["preset"], progress=JobBar(job, 0.2, 1.0),
-                 fps_out=P["fps_out"], is_mm=P["is_mm"], cancel=lambda: check_cancel(job))
-    T["🎬 Video render"] = time.time() - t_a
-    T["⏱️ စုစုပေါင်း (အဆင့် 2)"] = time.time() - t_all
-    msg = f"🎬 Render ပြီး ({cum:.1f}s / မူရင်း {vdur:.1f}s)"
-    if vox is not None:
-        msg += f" · VoxCPM {vox_ok}/{n}"
-    job["out"] = {"final": final, "T2": T, "info": msg}
+        subs, t0 = [], 0.0
+        if P["use_sub"]:
+            for i in range(n):
+                di = max(durs[i], 0.05)
+                parts = split_for_sub(my_list[i], lang=P["voice_lang"])
+                tot = sum(len(p) for p in parts) or 1
+                cur = t0
+                for p in parts:
+                    dd = di * len(p) / tot
+                    subs.append((cur, cur + dd, p))
+                    cur += dd
+                t0 += di
+
+        t_a = time.time()
+        pipe.wait_all(lambda: progress_tick(n))
+        job["label"] = "🎬 Neon + စာတန်း + အသံ ပေါင်းနေတယ်..."
+        job["frac"] = 0.7
+        final = f"{wd}/final.mp4"
+        finalize_render(pipe, allwav, final, cum, W, H, fps, subs,
+                        P["font_path"] if P["use_sub"] else None, fs, P["sub_pos"],
+                        P["use_neon"], P["neon_th"], P["neon_speed"], P["sub_style"],
+                        P["preset"], P["is_mm"], tmp,
+                        progress=JobBar(job, 0.7, 1.0), cancel=cancel_fn)
+        T["🎬 Video render (ကျန်တဲ့အပိုင်း)"] = time.time() - t_a
+        T["⏱️ စုစုပေါင်း (အဆင့် 2)"] = time.time() - t_all
+        msg = f"🎬 Render ပြီး ({cum:.1f}s / မူရင်း {vdur:.1f}s)"
+        if vox is not None:
+            msg += f" · VoxCPM {vox_ok}/{n}"
+        job["out"] = {"final": final, "T2": T, "info": msg}
+    finally:
+        pipe.shutdown()
+        small_pool.shutdown(wait=False)
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 # ====================================================================
@@ -1522,7 +1672,7 @@ with st.expander("⚙️ Settings", expanded=False):
                              help="faster-whisper 1.1+ လိုတယ်။ မရရင် အလိုအလျောက် ပုံမှန်နည်းကို ပြန်သုံးမယ်")
     c3, c4 = st.columns(2)
     height = c3.select_slider("Output height", OPTS["height"], key="height",
-                              help="480 သုံးရင် render အရမ်းမြန်တယ်")
+                              help="480 သုံးရင် render အရမ်းမြန်တယ်။ Stage 1 မနှိပ်ခင် ရွေးထားရင် source ကို ကြိုချုံ့ထားပေးမယ်")
     max_speed = c4.slider("ရုပ် အမြန်ဆုံး ဆ", 1.0, 2.0, step=0.05, key="max_speed")
     c7, c8 = st.columns(2)
     fps_out = c7.selectbox("Output FPS", OPTS["fps_out"], key="fps_out",
@@ -1655,7 +1805,8 @@ if st.button("1️⃣ စာသားထုတ်", type="primary", use_containe
     wd = tempfile.mkdtemp(prefix="recap_")
     st.session_state["wd"] = wd
     start_job(reg, JID, "whisper", job_whisper, reg, wd, vid_path,
-              {"src_lang": src_lang, "wsize": wsize, "max_min": max_min, "fast": fast_whisper})
+              {"src_lang": src_lang, "wsize": wsize, "max_min": max_min,
+               "fast": fast_whisper, "height": int(height)})
     persist(JID)
     st.rerun()
 
