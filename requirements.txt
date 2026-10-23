@@ -1,11 +1,8 @@
 streamlit>=1.40
-faster-whisper==1.0.3
-ctranslate2==4.4.0
-av==12.3.0
-numpy==1.26.4
-pandas
-pillow
 opencv-python-headless
+numpy
+pillow
+faster-whisper
 edge-tts
 gradio_client
 yt-dlp
