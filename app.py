@@ -19,7 +19,7 @@ import numpy as np
 import streamlit as st
 from PIL import Image, ImageDraw, ImageFont, features
 
-st.set_page_config(page_title="Recap → Multi-Lang", page_icon="🎙️", layout="centered")
+st.set_page_config(page_title="Recap → Multi-Language", page_icon="🎙️", layout="centered")
 
 TARGET, MAXD = 4.2, 5.6
 
@@ -176,8 +176,6 @@ def _gclient(space, token):
 
 
 class VoxEngine:
-    """VoxCPM Space များကို အစဉ်လိုက် စမ်းမယ်။ မရရင် None ပြန် (Edge TTS ကို မခေါ်တော့ - caller က retry/error ပြမယ်)။"""
-
     def __init__(self, ref_path=None, token=None):
         self.ref = ref_path
         self.token = token
@@ -229,7 +227,7 @@ class VoxEngine:
                 shutil.copy(p, out_wav)
                 self.active = i
                 return sp["space"]
-            except Exception as ex:  # noqa: BLE001
+            except Exception as ex:
                 self.last_err = f"{sp['space']}: {str(ex)[:120]}"
                 self.fails[i] += 1
                 if self.fails[i] >= 2:
@@ -241,11 +239,9 @@ class VoxEngine:
 # Font helpers
 # ====================================================================
 def find_font_for(lang="မြန်မာ"):
-    """ဘာသာစကားအလိုက် သက်ဆိုင်ရာ font ရှာ"""
     here = os.path.dirname(os.path.abspath(__file__))
     conf = LANG_CONF.get(lang, LANG_CONF["မြန်မာ"])
 
-    # repo ထဲက font
     if conf["is_mm"]:
         for name in ("MyanmarPadaung.ttf", "fonts/MyanmarPadaung.ttf"):
             pref = os.path.join(here, name)
@@ -256,7 +252,6 @@ def find_font_for(lang="မြန်မာ"):
     if repo:
         return repo[0]
 
-    # system font
     sysf = glob.glob("/usr/share/fonts/**/*.ttf", recursive=True) + \
         glob.glob("/usr/share/fonts/**/*.otf", recursive=True) + \
         glob.glob("/usr/share/fonts/**/*.ttc", recursive=True)
@@ -277,10 +272,10 @@ def get_font(path, size, layout="raqm"):
             use_raqm = layout == "raqm" and features.check("raqm")
             eng = ImageFont.Layout.RAQM if use_raqm else ImageFont.Layout.BASIC
             _FONT_CACHE[key] = ImageFont.truetype(path, size, layout_engine=eng)
-        except Exception:  # noqa: BLE001
+        except Exception:
             try:
                 _FONT_CACHE[key] = ImageFont.truetype(path, size)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 _FONT_CACHE[key] = ImageFont.load_default()
     return _FONT_CACHE[key]
 
@@ -306,9 +301,7 @@ def split_syll(word):
 
 
 def wrap_text(text, font, maxw, is_mm=False):
-    """wrap — မြန်မာဆို syllable၊ တခြားဆို space/char အလိုက်"""
     lines, cur = [], ""
-    # ဂျပန်က space မပါဘဲ char အလိုက် wrap
     if not is_mm and " " not in text and any(0x3040 <= ord(c) <= 0x9FFF for c in text):
         for ch in text:
             if not cur or font.getlength(cur + ch) <= maxw:
@@ -344,7 +337,6 @@ def split_for_sub(text, mc=36, lang="မြန်မာ"):
         if len(s) <= mc:
             parts.append(s)
             continue
-        # ဂျပန်: char အလိုက် ခွဲ
         if lang == "ဂျပန်":
             cur = ""
             for ch in s:
@@ -575,7 +567,7 @@ def render_final(src, audio, out, plan, total, height, subs, font_path, fs_pct, 
         cap.release()
         try:
             proc.stdin.close()
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
         proc.wait()
         log.close()
@@ -647,7 +639,7 @@ def reset_job():
     for k in ("wd", "units", "vdur", "result", "manual", "apply_msg", "gem_paste", "t1", "t2"):
         try:
             st.session_state.pop(k, None)
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
 
@@ -655,7 +647,7 @@ def cleanup_uploads():
     for p in st.session_state.get("up_paths", []):
         try:
             os.remove(p)
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
     st.session_state["up_paths"] = []
     st.session_state.pop("link_path", None)
@@ -766,7 +758,7 @@ def _ensure_mp4(raw, final, height):
     try:
         codec = sh(["ffprobe", "-v", "error", "-select_streams", "v:0",
                     "-show_entries", "stream=codec_name", "-of", "csv=p=0", raw]).strip()
-    except Exception:  # noqa: BLE001
+    except Exception:
         codec = ""
     if not codec:
         raise RuntimeError("Video stream မတွေ့ပါ (ဖိုင်က video မဟုတ်နိုင်)")
@@ -774,7 +766,7 @@ def _ensure_mp4(raw, final, height):
         try:
             sh(["ffmpeg", "-y", "-i", raw, "-c", "copy", "-movflags", "+faststart", final])
             return final
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
     sh(["ffmpeg", "-y", "-i", raw, "-vf", f"scale=-2:'min(ih,{int(height)})'",
         "-c:v", "libx264", "-preset", "ultrafast", "-crf", "26", "-pix_fmt", "yuv420p",
@@ -815,7 +807,7 @@ def fetch_link(url, height, bar=None, cookies_text=None):
                     else:
                         raw = _dl_ytdlp(url, os.path.join(work, "yt"), height, bar, cookies_text)
                     break
-                except Exception as ex:  # noqa: BLE001
+                except Exception as ex:
                     errs.append(f"{m}: {str(ex)[:200]}")
                     raw = None
             if not raw:
@@ -847,7 +839,6 @@ with st.expander("⚙️ Settings", expanded=False):
                           help="ultrafast = အမြန်ဆုံး (file အနည်းငယ်ကြီး)၊ veryfast = file သေး/နှေးနည်းနည်း")
 
 with st.expander("🔊 ဘာသာစကား + အသံ (Voice)", expanded=True):
-    # ---- ဘာသာစကား ရွေး (voice + prompt တွဲ)
     voice_lang = st.radio("ဘာသာစကား (အသံ + Prompt)",
                           list(LANG_CONF.keys()), horizontal=True, key="voice_lang")
     lang_conf = LANG_CONF[voice_lang]
@@ -862,7 +853,6 @@ with st.expander("🔊 ဘာသာစကား + အသံ (Voice)", expanded=T
         voice = st.selectbox(
             "Edge voice", list(vlabels.keys()),
             format_func=lambda v: vlabels.get(v, v))
-        # ---- Speed default 45
         rate_n = st.slider("Edge speed %", -50, 100, 45, 5)
         tts_workers = st.slider("TTS တစ်ပြိုင်နက် အရေအတွက်", 1, 10, 6,
                                 help="များရင်မြန်တယ်။ Edge က error ပေးရင် လျှော့ပါ")
@@ -927,7 +917,7 @@ if mode.startswith("🔗"):
                 st.session_state["link_src"] = url_in.strip()
                 ds.update(label=f"✅ ဆွဲပြီး · {os.path.getsize(p)/1e6:.1f} MB · {fmt_t(time.time() - t_dl)}",
                           state="complete")
-            except Exception as ex:  # noqa: BLE001
+            except Exception as ex:
                 st.session_state.pop("link_path", None)
                 st.session_state.pop("link_src", None)
                 ds.update(label="❌ မဆွဲနိုင်ပါ", state="error")
@@ -956,7 +946,7 @@ if vid_path:
                           sub_style, is_mm=is_mm)
         if pv is not None:
             st.image(pv, caption=f"Preview ({voice_lang})", use_container_width=True)
-    except Exception as ex:  # noqa: BLE001
+    except Exception as ex:
         st.caption(f"preview မရ: {str(ex)[:100]}")
 
 # ====================================================================
@@ -1021,7 +1011,7 @@ if st.button("1️⃣ စာသားထုတ်", type="primary", disabled=not
         ]
         st.session_state["manual"] = True
         st.session_state["ver"] = st.session_state.get("ver", 0) + 1
-    except Exception as ex:  # noqa: BLE001
+    except Exception as ex:
         st.error(f"Error: {ex}")
 
 # ====================================================================
@@ -1086,7 +1076,7 @@ if st.session_state.get("units"):
                         with open(keyf) as kf:
                             if kf.read().strip() == key:
                                 return i, wav_dur(wav), vox is not None
-                    except Exception:  # noqa: BLE001
+                    except Exception:
                         pass
                 if vox is not None:
                     raw_audio = f"{wd}/a{i:04d}_raw.wav"
@@ -1108,7 +1098,7 @@ if st.session_state.get("units"):
                         try:
                             tts_edge(my_list[i], voice, rate, raw_audio, proxy)
                             break
-                        except Exception as ex:  # noqa: BLE001
+                        except Exception as ex:
                             if attempt == 3:
                                 raise RuntimeError(
                                     f"Edge TTS မအောင်မြင်ပါ (စာကြောင်း #{i}): {ex}\n\n{my_list[i]}")
@@ -1193,7 +1183,7 @@ if st.session_state.get("units"):
 
             with open(final, "rb") as f:
                 st.session_state["result"] = f.read()
-        except Exception as ex:  # noqa: BLE001
+        except Exception as ex:
             st.error(f"Error: {ex}")
 
 # ====================================================================
