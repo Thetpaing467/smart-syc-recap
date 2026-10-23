@@ -1,3 +1,5 @@
 ffmpeg
 libraqm0
-fonts-sil-padauk
+fonts-noto-cjk
+fonts-dejavu
+fonts-padauk
