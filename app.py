@@ -129,6 +129,8 @@ DEFAULTS = {
     "sub_size": 7.0,
     "sub_pos": 90,
     "use_neon": True,
+    "neon_th": 10,
+    "neon_speed": 0.4,
     "zoom": 1.0,
 }
 for _lg, _c in LANG_CONF.items():
@@ -148,6 +150,7 @@ RANGES = {
     "max_speed": (1.0, 2.0, float), "max_min": (1, 120, int), "rate_n": (-50, 100, int),
     "tts_workers": (1, 10, int), "vox_retry": (1, 8, int), "sub_size": (3.0, 12.0, float),
     "sub_pos": (0, 100, int), "zoom": (1.0, 1.25, float),
+    "neon_th": (2, 40, int), "neon_speed": (0.1, 3.0, float),
 }
 BOOLS = {"fast_whisper", "use_sub", "use_neon"}
 
@@ -1430,6 +1433,15 @@ with st.expander("🎨 စာတန်း (PNG) + Neon", expanded=False):
     sub_size = c5.slider("စာအရွယ် (% of width)", 3.0, 12.0, step=0.5, key="sub_size")
     sub_pos = c6.slider("နေရာ (0=အပေါ် 100=အောက်)", 0, 100, step=1, key="sub_pos")
     use_neon = st.toggle("Neon border", key="use_neon")
+    if use_neon:
+        cn1, cn2 = st.columns(2)
+        neon_th = cn1.slider("Neon အထူ (px)", 2, 40, step=1, key="neon_th",
+                             help="ဘောင်အထူ။ 1080p မှာ 10~14 ကောင်းတယ်")
+        neon_speed = cn2.slider("Neon အလျင်း (speed)", 0.1, 3.0, step=0.1, key="neon_speed",
+                                help="အလင်းရောင် လှည့်ပတ်မှု အလျင်း")
+    else:
+        neon_th = st.session_state["neon_th"]
+        neon_speed = st.session_state["neon_speed"]
     zoom = st.slider("Zoom", 1.0, 1.25, step=0.01, key="zoom")
     font_path = find_font_for(voice_lang)
     if not font_path:
@@ -1439,8 +1451,6 @@ with st.expander("🎨 စာတန်း (PNG) + Neon", expanded=False):
     if not features.check("raqm"):
         st.warning("raqm မရှိလို့ မြန်မာစာ ပုံစံ မမှန်နိုင်ပါ (packages.txt ထဲ libraqm0 ပါစေ)")
 
-neon_th = 10
-neon_speed = 0.4
 flip = True
 sub_style = {
     "alpha": int(0.8 * 255),
