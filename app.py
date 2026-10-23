@@ -1366,11 +1366,6 @@ busy = bool(_job and _job["state"] == "running")
 st.title("🎙️ Recap → Multi-Language")
 st.caption("Whisper → Gemini → Edge TTS / VoxCPM → Smart Sync → PNG စာတန်း + Neon border")
 
-if busy:
-    job_panel(JID)
-if st.session_state.get("job_err"):
-    st.error(st.session_state["job_err"][:1500])
-
 with st.expander("⚙️ Settings", expanded=False):
     c1, c2 = st.columns(2)
     src_lang = c1.selectbox("မူရင်းဘာသာ", OPTS["src_lang"], key="src_lang")
@@ -1524,7 +1519,8 @@ if st.session_state.get("units"):
         st.subheader(f"📋 Gemini မှာ ဘာသာပြန်ရန် ({voice_lang})")
         st.caption("① အောက်က စာသားကို Copy (ညာထောင့် icon) → ② Gemini app မှာ paste → "
                    "③ ရလဒ်ကို အောက်က ကွက်ထဲ paste → ④ Apply")
-        st.code(build_prompt(units, voice_lang), language=None)
+        with st.expander("📄 Prompt (ဖွင့်ပြီး Copy ယူပါ)", expanded=False):
+            st.code(build_prompt(units, voice_lang), language=None)
         pasted = st.text_area("Gemini ရလဒ် ဒီမှာ paste", height=200, key="gem_paste",
                               placeholder="[0] ဘာသာပြန်စာသား...\n[1] ဘာသာပြန်စာသား...")
         if st.button("✅ Apply (စာသား ဖြည့်)", use_container_width=True, key="btn_apply"):
@@ -1572,6 +1568,14 @@ if st.session_state.get("units"):
                       [dict(u) for u in units], my_list, vdur, P)
             persist(JID)
             st.rerun()
+
+# ====================================================================
+# Processing panel (ခလုတ်တွေရဲ့ အောက်မှာ ပြ)
+# ====================================================================
+if busy:
+    job_panel(JID)
+if st.session_state.get("job_err"):
+    st.error(st.session_state["job_err"][:1500])
 
 # ====================================================================
 # Result
