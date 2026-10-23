@@ -19,7 +19,7 @@ import numpy as np
 import streamlit as st
 from PIL import Image, ImageDraw, ImageFont, features
 
-st.set_page_config(page_title="Recap → Myanmar", page_icon="🎙️", layout="centered")
+st.set_page_config(page_title="Recap → Multi-Lang", page_icon="🎙️", layout="centered")
 
 TARGET, MAXD = 4.2, 5.6
 
@@ -32,6 +32,73 @@ TRIM = (
     "silenceremove=start_periods=1:start_threshold=-50dB,areverse,"
     "silenceremove=start_periods=1:start_threshold=-50dB,areverse,apad=pad_dur=0.2"
 )
+
+# ====================================================================
+# ဘာသာစကား အချက်အလက် (အသံ + စာတန်း ခွဲပုံ)
+# ====================================================================
+LANG_CONF = {
+    "မြန်မာ": {
+        "edge_voices": [
+            ("my-MM-ThihaNeural", "Thiha (ယောက်ျား)"),
+            ("my-MM-NilarNeural", "Nilar (မိန်းမ)"),
+        ],
+        "sentence_end": r"(?<=။)",
+        "prompt": (
+            "You are a Burmese (Myanmar) recap-video narrator. Translate every numbered line "
+            "below into natural spoken Burmese narration (storyteller style). Rules: do NOT "
+            "summarize, shorten or skip; do NOT move content between lines; keep character "
+            "names consistent across all lines; use ONLY Burmese script (Myanmar Unicode), "
+            "no English/Chinese letters. Output exactly one line per input line in the format "
+            "[number] Burmese text -- same numbers, no extra comments.\n\n"
+        ),
+        "font_keys": ("padauk", "myanmar", "pyidaung", "notosansmyanmar", "myanmarpadaung"),
+        "clean": r"[^\u1000-\u109F\uAA60-\uAA7F\uA9E0-\uA9FF\s0-9.,!?\"'%\-]",
+        "is_mm": True,
+    },
+    "ဂျာမနီ": {
+        "edge_voices": [
+            ("de-DE-KatjaNeural", "Katja (မိန်းမ)"),
+            ("de-DE-ConradNeural", "Conrad (ယောက်ျား)"),
+            ("de-DE-AmalaNeural", "Amala (မိန်းမ)"),
+            ("de-DE-BerndNeural", "Bernd (ယောက်ျား)"),
+        ],
+        "sentence_end": r"(?<=[.!?])\s+",
+        "prompt": (
+            "You are a German (Deutsch) recap-video narrator. Translate every numbered line "
+            "below into natural spoken German narration (storyteller style). Rules: do NOT "
+            "summarize, shorten or skip; do NOT move content between lines; keep character "
+            "names consistent across all lines; use ONLY German (Latin script), no Chinese "
+            "letters. Output exactly one line per input line in the format "
+            "[number] German text -- same numbers, no extra comments.\n\n"
+        ),
+        "font_keys": ("dejavu", "liberation", "notosans", "arial", "freesans"),
+        "clean": r"[^A-Za-zÄÖÜäöüß0-9\s.,!?\"'%\-]",
+        "is_mm": False,
+    },
+    "ဂျပန်": {
+        "edge_voices": [
+            ("ja-JP-NanamiNeural", "Nanami (မိန်းမ)"),
+            ("ja-JP-KeitaNeural", "Keita (ယောက်ျား)"),
+            ("ja-JP-AoiNeural", "Aoi (မိန်းမ)"),
+            ("ja-JP-DaichiNeural", "Daichi (ယောက်ျား)"),
+            ("ja-JP-MayuNeural", "Mayu (မိန်းမ)"),
+            ("ja-JP-NaokiNeural", "Naoki (ယောက်ျား)"),
+            ("ja-JP-ShioriNeural", "Shiori (မိန်းမ)"),
+        ],
+        "sentence_end": r"(?<=[。！？!?])",
+        "prompt": (
+            "You are a Japanese (日本語) recap-video narrator. Translate every numbered line "
+            "below into natural spoken Japanese narration (storyteller style). Rules: do NOT "
+            "summarize, shorten or skip; do NOT move content between lines; keep character "
+            "names consistent across all lines; use ONLY Japanese (Kanji, Hiragana, Katakana), "
+            "no English/Chinese letters except kanji. Output exactly one line per input line "
+            "in the format [number] Japanese text -- same numbers, no extra comments.\n\n"
+        ),
+        "font_keys": ("notosansjp", "notosanscjk", "notosansjapanese", "takao", "ipag", "vl-gothic", "msgothic"),
+        "clean": r"[^\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF\uFF00-\uFFEF0-9\s.,!?\"'%\-]",
+        "is_mm": False,
+    },
+}
 
 
 # ====================================================================
@@ -74,12 +141,8 @@ def timing_table(d):
 
 
 def clean_text(text, lang="မြန်မာ"):
-    """ဘာသာစကားအလိုက် မလိုတဲ့ စာလုံးဖျက်"""
-    if lang == "ဂျာမနီ":
-        return re.sub(r"[^A-Za-zÄÖÜäöüß0-9\s.,!?\"'%\-]", "", text).strip()
-    return re.sub(
-        r"[^\u1000-\u109F\uAA60-\uAA7F\uA9E0-\uA9FF\s0-9.,!?\"'%\-]", "", text
-    ).strip()
+    conf = LANG_CONF.get(lang, LANG_CONF["မြန်မာ"])
+    return re.sub(conf["clean"], "", text).strip()
 
 
 @st.cache_resource(show_spinner="Whisper model ကို ဖွင့်နေတယ် (ပထမအကြိမ် download လုပ်မယ်)...")
@@ -175,21 +238,29 @@ class VoxEngine:
 
 
 # ====================================================================
-# Subtitle PNG (Pillow) helpers
+# Font helpers
 # ====================================================================
-def find_font():
+def find_font_for(lang="မြန်မာ"):
+    """ဘာသာစကားအလိုက် သက်ဆိုင်ရာ font ရှာ"""
     here = os.path.dirname(os.path.abspath(__file__))
-    for name in ("MyanmarPadaung.ttf", "fonts/MyanmarPadaung.ttf"):
-        pref = os.path.join(here, name)
-        if os.path.exists(pref):
-            return pref
+    conf = LANG_CONF.get(lang, LANG_CONF["မြန်မာ"])
+
+    # repo ထဲက font
+    if conf["is_mm"]:
+        for name in ("MyanmarPadaung.ttf", "fonts/MyanmarPadaung.ttf"):
+            pref = os.path.join(here, name)
+            if os.path.exists(pref):
+                return pref
     repo = glob.glob(os.path.join(here, "*.ttf")) + glob.glob(os.path.join(here, "*.otf")) + \
         glob.glob(os.path.join(here, "fonts", "*.ttf")) + glob.glob(os.path.join(here, "fonts", "*.otf"))
     if repo:
         return repo[0]
+
+    # system font
     sysf = glob.glob("/usr/share/fonts/**/*.ttf", recursive=True) + \
-        glob.glob("/usr/share/fonts/**/*.otf", recursive=True)
-    for key in ("padauk", "myanmar", "pyidaung", "notosansmyanmar"):
+        glob.glob("/usr/share/fonts/**/*.otf", recursive=True) + \
+        glob.glob("/usr/share/fonts/**/*.ttc", recursive=True)
+    for key in conf["font_keys"]:
         for f in sysf:
             if key in os.path.basename(f).lower():
                 return f
@@ -234,10 +305,23 @@ def split_syll(word):
     return [word[idx[k]:idx[k + 1]] for k in range(len(idx) - 1)]
 
 
-def wrap_text(text, font, maxw):
+def wrap_text(text, font, maxw, is_mm=False):
+    """wrap — မြန်မာဆို syllable၊ တခြားဆို space/char အလိုက်"""
     lines, cur = [], ""
+    # ဂျပန်က space မပါဘဲ char အလိုက် wrap
+    if not is_mm and " " not in text and any(0x3040 <= ord(c) <= 0x9FFF for c in text):
+        for ch in text:
+            if not cur or font.getlength(cur + ch) <= maxw:
+                cur += ch
+            else:
+                lines.append(cur)
+                cur = ch
+        if cur:
+            lines.append(cur)
+        return lines
+
     for word in text.split():
-        pieces = [word] if font.getlength(word) <= maxw else split_syll(word)
+        pieces = [word] if font.getlength(word) <= maxw else (split_syll(word) if is_mm else list(word))
         for pi, p in enumerate(pieces):
             sep = " " if (pi == 0 and cur) else ""
             cand = cur + sep + p
@@ -251,16 +335,30 @@ def wrap_text(text, font, maxw):
     return lines
 
 
-def split_for_sub(text, mc=36):
-    sents = [s.strip() for s in re.split(r"(?<=။)", text) if s.strip()]
+def split_for_sub(text, mc=36, lang="မြန်မာ"):
+    conf = LANG_CONF.get(lang, LANG_CONF["မြန်မာ"])
+    is_mm = conf["is_mm"]
+    sents = [s.strip() for s in re.split(conf["sentence_end"], text) if s.strip()]
     parts = []
     for s in sents:
         if len(s) <= mc:
             parts.append(s)
             continue
+        # ဂျပန်: char အလိုက် ခွဲ
+        if lang == "ဂျပန်":
+            cur = ""
+            for ch in s:
+                if not cur or len(cur + ch) <= mc:
+                    cur += ch
+                else:
+                    parts.append(cur)
+                    cur = ch
+            if cur:
+                parts.append(cur)
+            continue
         cur = ""
         for word in s.split():
-            pieces = [word] if len(word) <= mc else split_syll(word)
+            pieces = [word] if len(word) <= mc else (split_syll(word) if is_mm else list(word))
             for pi, p in enumerate(pieces):
                 sep = " " if (pi == 0 and cur) else ""
                 if not cur or len(cur + sep + p) <= mc:
@@ -274,13 +372,13 @@ def split_for_sub(text, mc=36):
 
 
 def build_overlay(text, W, H, font_path, fs, pos_y, alpha=200, color=(255, 255, 255),
-                  bold=0, layout="raqm"):
+                  bold=0, layout="raqm", is_mm=True):
     font = get_font(font_path, fs, layout)
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
 
     pad_x, pad_y = int(fs * 0.6), int(fs * 0.5)
-    lines = wrap_text(text, font, W - 2 * pad_x)
+    lines = wrap_text(text, font, W - 2 * pad_x, is_mm)
     if not lines:
         return None
     lh = int(fs * 1.4)
@@ -374,7 +472,7 @@ def zoom_flip(fr, zoom, flip):
 
 def render_final(src, audio, out, plan, total, height, subs, font_path, fs_pct, pos_y,
                  neon_on, neon_th, neon_speed, flip, zoom, style=None, preset="ultrafast",
-                 progress=None, fps_out=30):
+                 progress=None, fps_out=30, is_mm=True):
     style = style or {}
     cap = cv2.VideoCapture(src)
     sfps = cap.get(cv2.CAP_PROP_FPS) or 30.0
@@ -455,7 +553,8 @@ def render_final(src, audio, out, plan, total, height, subs, font_path, fs_pct, 
                     k += 1
                 if k < len(subs) and subs[k][0] <= t:
                     if cur_k != k:
-                        cur_ov = build_overlay(subs[k][2], W, H, font_path, fs, pos_y, **style)
+                        cur_ov = build_overlay(subs[k][2], W, H, font_path, fs, pos_y,
+                                               is_mm=is_mm, **style)
                         cur_k = k
                     if cur_ov:
                         blend_overlay(fr, cur_ov)
@@ -490,7 +589,7 @@ def render_final(src, audio, out, plan, total, height, subs, font_path, fs_pct, 
 
 
 def make_preview(path, height, text, font_path, fs_pct, pos_y, neon_on, neon_th,
-                 neon_speed, flip, zoom, style=None):
+                 neon_speed, flip, zoom, style=None, is_mm=True):
     cap = cv2.VideoCapture(path)
     cap.set(cv2.CAP_PROP_POS_MSEC, 1000)
     ok, fr = cap.read()
@@ -508,7 +607,8 @@ def make_preview(path, height, text, font_path, fs_pct, pos_y, neon_on, neon_th,
     if neon_on:
         Neon(W, H, neon_th, neon_speed).apply(fr, 1.0)
     if font_path:
-        ov = build_overlay(text, W, H, font_path, max(16, int(W * fs_pct / 100)), pos_y, **(style or {}))
+        ov = build_overlay(text, W, H, font_path, max(16, int(W * fs_pct / 100)), pos_y,
+                           is_mm=is_mm, **(style or {}))
         if ov:
             blend_overlay(fr, ov)
     return cv2.cvtColor(fr, cv2.COLOR_BGR2RGB)
@@ -517,29 +617,10 @@ def make_preview(path, height, text, font_path, fs_pct, pos_y, neon_on, neon_th,
 # ====================================================================
 # Manual translate helpers (Gemini app မှာ copy-paste)
 # ====================================================================
-PROMPT_LANGS = {
-    "မြန်မာ": (
-        "You are a Burmese (Myanmar) recap-video narrator. Translate every numbered line "
-        "below into natural spoken Burmese narration (storyteller style). Rules: do NOT "
-        "summarize, shorten or skip; do NOT move content between lines; keep character "
-        "names consistent across all lines; use ONLY Burmese script (Myanmar Unicode), "
-        "no English/Chinese letters. Output exactly one line per input line in the format "
-        "[number] Burmese text -- same numbers, no extra comments.\n\n"
-    ),
-    "ဂျာမနီ": (
-        "You are a German (Deutsch) recap-video narrator. Translate every numbered line "
-        "below into natural spoken German narration (storyteller style). Rules: do NOT "
-        "summarize, shorten or skip; do NOT move content between lines; keep character "
-        "names consistent across all lines; use ONLY German (Latin script), no Chinese "
-        "letters. Output exactly one line per input line in the format "
-        "[number] German text -- same numbers, no extra comments.\n\n"
-    ),
-}
-
-
 def build_prompt(units, lang="မြန်မာ"):
     lines = "\n".join(f"[{i}] {u['src']}" for i, u in enumerate(units))
-    return PROMPT_LANGS.get(lang, PROMPT_LANGS["မြန်မာ"]) + lines
+    conf = LANG_CONF.get(lang, LANG_CONF["မြန်မာ"])
+    return conf["prompt"] + lines
 
 
 def parse_numbered(text, n):
@@ -750,7 +831,7 @@ def fetch_link(url, height, bar=None, cookies_text=None):
 # ====================================================================
 # UI
 # ====================================================================
-st.title("🎙️ Recap → Myanmar")
+st.title("🎙️ Recap → Multi-Language")
 st.caption("Whisper → Gemini → Edge TTS / VoxCPM → Smart Sync → PNG စာတန်း + Neon border")
 
 with st.expander("⚙️ Settings", expanded=False):
@@ -765,16 +846,23 @@ with st.expander("⚙️ Settings", expanded=False):
     preset = st.selectbox("Render speed", ["ultrafast", "superfast", "veryfast"], index=0,
                           help="ultrafast = အမြန်ဆုံး (file အနည်းငယ်ကြီး)၊ veryfast = file သေး/နှေးနည်းနည်း")
 
-with st.expander("🔊 အသံ (Voice)", expanded=False):
+with st.expander("🔊 ဘာသာစကား + အသံ (Voice)", expanded=True):
+    # ---- ဘာသာစကား ရွေး (voice + prompt တွဲ)
+    voice_lang = st.radio("ဘာသာစကား (အသံ + Prompt)",
+                          list(LANG_CONF.keys()), horizontal=True, key="voice_lang")
+    lang_conf = LANG_CONF[voice_lang]
+
     engine = st.radio("TTS engine",
-                      ["Edge TTS", "VoxCPM (Edge TTS / Thiha မသုံးဘူး)"], horizontal=False)
+                      ["Edge TTS", "VoxCPM (Edge TTS မသုံးဘူး)"], horizontal=False)
     is_vox = engine.startswith("Vox")
 
-    voice, rate_n = "my-MM-ThihaNeural", 0
+    voice, rate_n = lang_conf["edge_voices"][0][0], 0
     if not is_vox:
-        voice = st.selectbox("Edge voice", ["my-MM-ThihaNeural", "my-MM-NilarNeural"],
-                             format_func=lambda v: "Thiha (ယောက်ျား)" if "Thiha" in v else "Nilar (မိန်းမ)")
-        # ---- Speed default 45 (သင့်တောင်းဆိုချက်)
+        vlabels = {v: lbl for v, lbl in lang_conf["edge_voices"]}
+        voice = st.selectbox(
+            "Edge voice", list(vlabels.keys()),
+            format_func=lambda v: vlabels.get(v, v))
+        # ---- Speed default 45
         rate_n = st.slider("Edge speed %", -50, 100, 45, 5)
         tts_workers = st.slider("TTS တစ်ပြိုင်နက် အရေအတွက်", 1, 10, 6,
                                 help="များရင်မြန်တယ်။ Edge က error ပေးရင် လျှော့ပါ")
@@ -788,9 +876,11 @@ with st.expander("🔊 အသံ (Voice)", expanded=False):
                                   type=["wav", "mp3", "m4a"])
         vox_retry = st.slider("VoxCPM ပြန်စမ်းအကြိမ် (စာကြောင်းတစ်ခုချင်း)", 1, 8, 4,
                               help="Space sleep/queue ဖြစ်ရင် ပြန်စမ်းမယ်။ ကုန်ရင် Edge မသုံးဘဲ error ပြမယ်")
-        st.caption("VoxCPM ရွေးထားရင် Edge TTS (Thiha/Nilar) လုံးဝ မဝင်ပါ။ "
-                   "VoxCPM မရရင် error ပြပြီး ရပ်မယ်၊ ခဏနေ ပြန်စမ်းပါ။ "
-                   "Reference audio တင်ရင် စာကြောင်းတိုင်း အသံတူမယ်။")
+        st.caption("⚠️ VoxCPM က မြန်မာအသံသာ ကောင်းကောင်င် ထောက်ပံ့တယ်။ "
+                   "ဂျာမနီ/ဂျပန် အတွက် Edge TTS ကို ပြောင်းသုံးပါ။")
+
+rate = f"{rate_n:+d}%"
+is_mm = lang_conf["is_mm"]
 
 with st.expander("🎨 စာတန်း (PNG) + Neon", expanded=False):
     use_sub = st.toggle("PNG စာတန်းထည့်", value=True)
@@ -799,13 +889,13 @@ with st.expander("🎨 စာတန်း (PNG) + Neon", expanded=False):
     sub_pos = c6.slider("နေရာ (0=အပေါ် 100=အောက်)", 0, 100, 90, 1)
     use_neon = st.toggle("Neon border", value=True)
     zoom = st.slider("Zoom", 1.0, 1.25, 1.0, 0.01)
-    font_path = find_font()
+    font_path = find_font_for(voice_lang)
     if not font_path:
-        st.warning("Myanmar font မတွေ့ပါ။ MyanmarPadaung.ttf ကို repo root မှာ ထည့်ပါ။")
+        st.warning(f"{voice_lang} font မတွေ့ပါ။ repo သို့မဟုတ် system font ထည့်ပါ။")
+    else:
+        st.caption(f"🔤 Font: `{os.path.basename(font_path)}`")
     if not features.check("raqm"):
         st.warning("raqm မရှိလို့ မြန်မာစာ ပုံစံ မမှန်နိုင်ပါ (packages.txt ထဲ libraqm0 ပါစေ)")
-
-rate = f"{rate_n:+d}%"
 
 neon_th = 10
 neon_speed = 0.4
@@ -856,15 +946,21 @@ else:
 
 if vid_path:
     try:
-        pv = make_preview(vid_path, height, "စာတန်းထိုး နမူနာ စာသား ဖြစ်ပါတယ်။", font_path,
-                          sub_size, sub_pos, use_neon, neon_th, neon_speed, flip, zoom, sub_style)
+        sample = {
+            "မြန်မာ": "စာတန်းထိုး နမူနာ စာသား ဖြစ်ပါတယ်။",
+            "ဂျာမနီ": "Dies ist ein Beispiel-Untertitel.",
+            "ဂျပန်": "これはサンプルの字幕です。",
+        }[voice_lang]
+        pv = make_preview(vid_path, height, sample, font_path,
+                          sub_size, sub_pos, use_neon, neon_th, neon_speed, flip, zoom,
+                          sub_style, is_mm=is_mm)
         if pv is not None:
-            st.image(pv, caption="Preview", use_container_width=True)
+            st.image(pv, caption=f"Preview ({voice_lang})", use_container_width=True)
     except Exception as ex:  # noqa: BLE001
         st.caption(f"preview မရ: {str(ex)[:100]}")
 
 # ====================================================================
-# Stage 1 : Whisper + Gemini
+# Stage 1 : Whisper
 # ====================================================================
 if st.button("1️⃣ စာသားထုတ်", type="primary", disabled=not vid_path, use_container_width=True):
     reset_job()
@@ -929,7 +1025,7 @@ if st.button("1️⃣ စာသားထုတ်", type="primary", disabled=not
         st.error(f"Error: {ex}")
 
 # ====================================================================
-# Edit + Stage 2 : TTS → Smart Sync → Overlay
+# Edit + Stage 2
 # ====================================================================
 if st.session_state.get("units"):
     units = st.session_state["units"]
@@ -937,20 +1033,16 @@ if st.session_state.get("units"):
         st.caption("⏱️ " + " · ".join(f"{k} {fmt_t(v)}" for k, v in st.session_state["t1"].items()))
 
     if st.session_state.get("manual"):
-        st.subheader("📋 Gemini မှာ ဘာသာပြန်ရန်")
-        # ---- ဘာသာစကား ရွေးချယ်မှု (မြန်မာ / ဂျာမနီ) ----
-        prompt_lang = st.radio("ဘာသာစကား", ["မြန်မာ", "ဂျာမနီ"], horizontal=True,
-                               key="prompt_lang",
-                               help="Gemini ကို ဘယ်ဘာသာနဲ့ ဘာသာပြန်ခိုင်းမလဲ")
+        st.subheader(f"📋 Gemini မှာ ဘာသာပြန်ရန် ({voice_lang})")
         st.caption("① အောက်က စာသားကို Copy (ညာထောင့် icon) → ② Gemini app မှာ paste → "
                    "③ ရလဒ်ကို အောက်က ကွက်ထဲ paste → ④ Apply")
-        st.code(build_prompt(units, prompt_lang), language=None)
+        st.code(build_prompt(units, voice_lang), language=None)
         pasted = st.text_area("Gemini ရလဒ် ဒီမှာ paste", height=200, key="gem_paste",
                               placeholder="[0] ဘာသာပြန်စာသား...\n[1] ဘာသာပြန်စာသား...")
         if st.button("✅ Apply (စာသား ဖြည့်)", use_container_width=True):
             got = parse_numbered(pasted, len(units))
             for i, t in got.items():
-                units[i]["my"] = clean_text(t, prompt_lang)
+                units[i]["my"] = clean_text(t, voice_lang)
             missing = [i for i in range(len(units)) if not units[i]["my"]]
             st.session_state["apply_msg"] = (
                 f"ဖြည့်ပြီး {len(got)}/{len(units)} ကြောင်း"
@@ -963,7 +1055,7 @@ if st.session_state.get("units"):
     if st.button("2️⃣ အသံထုတ် + Video ပေါင်း", type="primary", use_container_width=True):
         wd, vdur = st.session_state["wd"], st.session_state["vdur"]
         src = os.path.join(wd, "src.mp4")
-        my_list = [clean_text(u["my"], st.session_state.get("prompt_lang", "မြန်မာ")) for u in units]
+        my_list = [clean_text(u["my"], voice_lang) for u in units]
         n = len(units)
         empty = [i for i, t in enumerate(my_list) if not t.strip()]
         if empty:
@@ -1008,7 +1100,7 @@ if st.session_state.get("units"):
                     if not used:
                         raise RuntimeError(
                             f"VoxCPM မအောင်မြင်ပါ (စာကြောင်း #{i}): {vox.last_err}\n\n"
-                            "Edge TTS (Thiha) ကို မသုံးထားပါ။ Space sleep/queue ဖြစ်နေနိုင်လို့ "
+                            "Edge TTS ကို မသုံးထားပါ။ Space sleep/queue ဖြစ်နေနိုင်လို့ "
                             "ခဏနေပြီး ပြန်စမ်းပါ။")
                 else:
                     raw_audio = f"{wd}/a{i:04d}_raw.mp3"
@@ -1076,7 +1168,7 @@ if st.session_state.get("units"):
             subs, t0 = [], 0.0
             if use_sub:
                 for i in range(n):
-                    parts = split_for_sub(my_list[i])
+                    parts = split_for_sub(my_list[i], lang=voice_lang)
                     tot = sum(len(p) for p in parts) or 1
                     cur = t0
                     for p in parts:
@@ -1092,7 +1184,7 @@ if st.session_state.get("units"):
                 render_final(src, allwav, final, plan, cum, height, subs,
                              font_path if use_sub else None, sub_size, sub_pos,
                              use_neon, neon_th, neon_speed, flip, zoom, sub_style,
-                             preset=preset, progress=bar)
+                             preset=preset, progress=bar, is_mm=is_mm)
                 T["🎬 Video render"] = time.time() - t_a
                 rst.update(label=f"🎬 Render ပြီး ({cum:.1f}s / မူရင်း {vdur:.1f}s) · "
                                  f"{fmt_t(T['🎬 Video render'])}", state="complete")
@@ -1118,8 +1210,10 @@ if st.session_state.get("result"):
     _tt.update(st.session_state.get("t2") or {})
     if _tt:
         st.markdown("**⏱️ ဘယ်အပိုင်း ဘယ်လောက်ကြာလဲ**\n\n" + timing_table(_tt))
+    fname = {"မြန်မာ": "final_myanmar.mp4", "ဂျာမနီ": "final_german.mp4",
+             "ဂျပန်": "final_japanese.mp4"}.get(voice_lang, "final.mp4")
     st.download_button("⬇️ Download MP4", st.session_state["result"],
-                       file_name="final_myanmar.mp4", mime="video/mp4",
+                       file_name=fname, mime="video/mp4",
                        use_container_width=True, on_click=cleanup_after_download)
     if st.session_state.get("cleaned"):
         st.caption("🧹 Script နဲ့ တင်ထားတဲ့ video ကို ဖျက်ပြီးပါပြီ")
