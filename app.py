@@ -4,6 +4,7 @@ import json
 import time
 import glob
 import wave
+import uuid
 import asyncio
 import shutil
 import hashlib
