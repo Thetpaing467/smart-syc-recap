@@ -197,6 +197,9 @@ class JobBar:
         except Exception:
             pass
 
+    def set_label(self, text):
+        self.job["label"] = text
+
 
 def secret(name, default=""):
     try:
@@ -845,7 +848,9 @@ def _dl_ytdlp(url, out_noext, height, bar=None, cookies_text=None):
                 bar.progress(min(d.get("downloaded_bytes", 0) / tot, 1.0))
 
     opts = {
-        "format": f"bv*[height<={height}]+ba/b[height<={height}]/bv*+ba/b",
+        "format": (f"bv*[height<={height}][vcodec^=avc1]+ba[ext=m4a]/"
+                   f"b[height<={height}][vcodec^=avc1]/"
+                   f"bv*[height<={height}]+ba/b[height<={height}]/bv*+ba/b"),
         "outtmpl": out_noext + ".%(ext)s",
         "merge_output_format": "mp4",
         "noplaylist": True,
@@ -930,6 +935,8 @@ def fetch_link(url, height, bar=None, cookies_text=None):
                 raise RuntimeError("Link ကနေ မဆွဲနိုင်ပါ\n" + "\n".join(errs))
         if bar is not None:
             bar.progress(1.0)
+            if hasattr(bar, "set_label"):
+                bar.set_label("🔄 MP4 ပြောင်းနေတယ် (ဖိုင်ကြီးရင် ခဏကြာမယ်)...")
         _ensure_mp4(raw, final, height)
         return final
     finally:
