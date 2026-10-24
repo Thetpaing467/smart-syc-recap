@@ -40,7 +40,7 @@ STATE_DIR = "/tmp/recap_state"
 os.makedirs(STATE_DIR, exist_ok=True)
 
 # ====================================================================
-# ဘာသာစကား အချက်အလက် (အသံ + စာတန်း ခွဲပုံ)
+# ဘာသာစကား အချက်အလက်
 # ====================================================================
 LANG_CONF = {
     "မြန်မာ": {
@@ -107,7 +107,7 @@ LANG_CONF = {
 }
 
 # ====================================================================
-# Settings (သိမ်းထားပြီး session ပြန်စရင်လည်း ပြန်ယူမယ်)
+# DEFAULTS / OPTS
 # ====================================================================
 DEFAULTS = {
     "mode": "🔗 Link",
@@ -129,9 +129,10 @@ DEFAULTS = {
     "sub_size": 7.0,
     "sub_pos": 90,
     "use_neon": True,
-    "neon_th": 3,       # ပုံသေ ထားပြီး
-    "neon_speed": 0.4,  # ပုံသေ ထားပြီး (ယခု အသုံးမပြတော့)
+    "neon_th": 3,
+    "neon_speed": 0.4,
     "zoom": 1.0,
+    "karaoke": True,
 }
 for _lg, _c in LANG_CONF.items():
     DEFAULTS[f"voice_{_lg}"] = _c["edge_voices"][0][0]
@@ -151,7 +152,7 @@ RANGES = {
     "tts_workers": (1, 10, int), "vox_retry": (1, 8, int), "sub_size": (3.0, 12.0, float),
     "sub_pos": (0, 100, int), "zoom": (1.0, 1.25, float),
 }
-BOOLS = {"fast_whisper", "use_sub", "use_neon"}
+BOOLS = {"fast_whisper", "use_sub", "use_neon", "karaoke"}
 
 
 def _coerce(k, v):
@@ -175,7 +176,7 @@ def _coerce(k, v):
 
 
 # ====================================================================
-# Generic helpers
+# Helpers
 # ====================================================================
 class Cancelled(Exception):
     pass
@@ -242,7 +243,7 @@ def clean_text(text, lang="မြန်မာ"):
 
 
 # ====================================================================
-# Background job registry
+# Registry
 # ====================================================================
 @st.cache_resource
 def get_registry():
@@ -280,16 +281,36 @@ def start_job(reg, jid, kind, target, *args):
 
 
 # ====================================================================
-# TTS
+# TTS (Edge: word boundary ဖမ်း)
 # ====================================================================
-def tts_edge(text, voice, rate, mp3, proxy=None):
+async def _edge_save_with_boundaries(text, voice, rate, mp3, proxy=None):
+    """
+    edge_tts ကို stream() နဲ့ ဖွင့်ပြီး audio + WordBoundary event တွေကို တစ်ချိန်တည်း ယူတယ်။
+    WordBoundary ရဲ့ offset ကို 100ns unit နဲ့ ပေးတယ် -> စက္ကန့်ပြောင်းပြီး သိမ်းတယ်။
+    ပြန်ရ: [(text, start_sec, end_sec), ...]
+    """
     import edge_tts
+    kw = {"proxy": proxy} if proxy else {}
+    words = []
+    sub_buf = []
+    with open(mp3, "wb") as f:
+        stream = edge_tts.Communicate(text, voice, rate=rate, **kw).stream()
+        async for chunk in stream:
+            if chunk["type"] == "audio":
+                f.write(chunk["data"])
+            elif chunk["type"] == "WordBoundary":
+                start = chunk["offset"] / 1e7  # 100ns -> sec
+                dur_s = chunk["duration"] / 1e7
+                words.append((chunk["text"], start, start + dur_s))
+    return words
 
-    async def run():
-        kw = {"proxy": proxy} if proxy else {}
-        await edge_tts.Communicate(text, voice, rate=rate, **kw).save(mp3)
 
-    asyncio.run(run())
+def tts_edge(text, voice, rate, mp3, proxy=None):
+    """
+    audio + word timestamps ကို ပြန်ပေးတယ်။
+    """
+    words = asyncio.run(_edge_save_with_boundaries(text, voice, rate, mp3, proxy))
+    return words
 
 
 def _gclient(space, token):
@@ -512,16 +533,119 @@ def split_for_sub(text, mc=36, lang="မြန်မာ"):
     return parts or [text]
 
 
-# --------------------------------------------------------------------
-# စာတန်း overlay (အဝါရောင် စာသား + အဝါရောင် highlight box)
-# --------------------------------------------------------------------
-def build_overlay(text, W, H, font_path, fs, pos_y, alpha=200, color=(255, 235, 0),
-                  bold=0, layout="raqm", is_mm=True, hl=True, hl_alpha=170):
+# ====================================================================
+# Karaoke overlay builder
+# ====================================================================
+def _compute_word_boxes(lines, font, W, pad_x, pad_y, fs, lh):
     """
-    hl=True  -> စာသား နောက်ကွယ်မှာ အဝါရောင် highlight box (ဖုံးသလို ခံစားရ)
-    hl=False -> အနက်ရောင် box သာ (မူရင်းအတိုင်း)
+    စာသားကို wrap ပြီး စာလုံးတစ်လုံးချင်းစီရဲ့ (x, y, w, char_start, char_end) ကို တွက်တယ်။
     """
-    font = get_font(font_path, fs, layout)
+    boxes = []
+    total_chars = 0
+    # စာကြောင်း တစ်ကြောင်းချင်းစီရဲ့ baseline y
+    for li, ln in enumerate(lines):
+        lw = font.getlength(ln)
+        lx = (W - lw) / 2.0
+        ty = pad_y + li * lh
+        # စာလုံး တစ်လုံးချင်းစီကို space-aware ခွဲ
+        # မြန်မာဆိုရင် syllable + space
+        chars = list(ln)
+        cur_x = lx
+        for ch in chars:
+            cw = font.getlength(ch)
+            boxes.append({
+                "char": ch,
+                "x": cur_x, "y": ty, "w": cw, "h": lh,
+                "idx": total_chars,
+            })
+            cur_x += cw
+            total_chars += 1
+    return boxes, total_chars
+
+
+def _char_groups_for_karaoke(text, units, is_mm):
+    """
+    text (ပြသမယ့် စာသား) ကို karaoke အလိုက် အုပ်စုတွေ ခွဲတယ်။
+    units: [(word, start_sec, end_sec), ...] -- Edge TTS WordBoundary
+    is_mm: မြန်မာဆိုရင် syllable-aware
+    ပြန်ရ: [(char_start, char_end, start_sec, end_sec), ...]
+    """
+    text = text.strip()
+    if not text:
+        return []
+
+    if units and len(units) > 0:
+        # WordBoundary ရှိတယ် -> စကားလုံးအလိုက် တိုက်စစ်
+        groups = []
+        pos = 0
+        txt = text
+        for w, s, e in units:
+            w = w.strip()
+            if not w:
+                continue
+            # ဒီ word ကို text ထဲမှာ ရှာမယ်
+            idx = txt.find(w, pos)
+            if idx == -1:
+                # တိုက်ရိုက် မတွေ့ရင် နောက်ကို ကျော်
+                continue
+            cs, ce = idx, idx + len(w)
+            groups.append((cs, ce, s, e))
+            pos = ce
+        if groups:
+            return groups
+
+    # Fallback: syllable-aware / word-aware / char-aware တစ်ညီတညွတ် ခွဲ
+    # -- ဒီနေရာမှာ text ရဲ့ char တွေကို အညီအမျှ အချိန်ခွဲပေးမယ် (စကားလုံး တစ်လုံးချင်း)
+    if is_mm:
+        # မြန်မာ: syllable တစ်ခုချင်း
+        # whitespace-aware syllable tokens
+        toks = []
+        buf = ""
+        for ch in text:
+            if ch.isspace():
+                if buf:
+                    toks.append(buf)
+                    buf = ""
+                toks.append(ch)
+            else:
+                buf += ch
+        if buf:
+            toks.append(buf)
+        # syllable ခွဲ
+        sub_toks = []
+        for t in toks:
+            if t.isspace():
+                sub_toks.append(t)
+            else:
+                sub_toks.extend(split_syll(t))
+    else:
+        # ဂျာမန်/ဂျပန်: word (space) / char (jp)
+        if " " in text:
+            toks = re.findall(r"\S+|\s+", text)
+        else:
+            toks = list(text)
+
+    # တစ်ညီတညွတ် အချိန်ခွဲ (ဒီ function ကို ခေါ်တဲ့နေရာမှာ တကယ့် audio duration ကို ထည့်ပေးမယ်)
+    # ဒီနေရာမှာ ကျွန်တော်တို့ units=[] ဖြစ်တဲ့အတွက် 0..1 normalize ပဲ ပြန်ပေးမယ်
+    # တကယ့် အချိန်ကို ပြင်ပမှာ ဖြည့်မယ်
+    groups = []
+    cs = 0
+    for t in sub_toks:
+        groups.append((cs, cs + len(t), None, None))
+        cs += len(t)
+    return groups
+
+
+def build_karaoke_overlay(text, W, H, font_path, fs, pos_y, unit_times, line_start,
+                          line_end, t_now, is_mm=True, alpha=170,
+                          sung_color=(255, 235, 0), unsung_color=(255, 255, 255),
+                          hl_alpha=170):
+    """
+    Frame တစ်ခုအတွက် karaoke overlay ကို ဖန်တီးတယ်။
+    - အဝါရောင် highlight box က စာကြောင်းတစ်ခုလုံးအတွက် ပေါ်နေမယ်
+    - စာသားက တစ်လုံးချင်း အသံရွတ်တာနဲ့ အဝါရောင် (sung) / အဖြူ (unsung) ပြောင်းတယ်
+    """
+    font = get_font(font_path, fs, "raqm")
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
 
@@ -529,40 +653,89 @@ def build_overlay(text, W, H, font_path, fs, pos_y, alpha=200, color=(255, 235, 
     lines = wrap_text(text, font, W - 2 * pad_x, is_mm)
     if not lines:
         return None
-
     lh = int(fs * 1.4)
-    box_w = W
     box_h = len(lines) * lh + 2 * pad_y
-    box_x = 0
     max_y = max(0, H - box_h)
     box_y = max(0, min(int(pos_y / 100 * max_y), max_y))
 
-    if hl:
-        # အဝါရောင် highlight box (ဖုံးသလို)
-        d.rounded_rectangle(
-            [box_x, box_y, box_x + box_w, box_y + box_h],
-            radius=int(fs * 0.66),
-            fill=(255, 235, 0, hl_alpha),
-            outline=(255, 200, 0, min(255, hl_alpha + 40)),
-            width=max(1, fs // 20),
-        )
-    else:
-        d.rounded_rectangle(
-            [box_x, box_y, box_x + box_w, box_y + box_h],
-            radius=int(fs * 0.66), fill=(0, 0, 0, alpha))
+    # 1) highlight box (အဝါရောင် နောက်ခံ) — စာကြောင်းတစ်ခုလုံး
+    d.rounded_rectangle(
+        [0, box_y, W, box_y + box_h],
+        radius=int(fs * 0.66),
+        fill=(255, 235, 0, hl_alpha),
+        outline=(255, 200, 0, min(255, hl_alpha + 40)),
+        width=max(1, fs // 20),
+    )
 
-    ink = (int(color[0]), int(color[1]), int(color[2]), 255)
-    # highlight box ပေါ်မှာ စာသားဖတ်ရအောင် အနက်ရောင် stroke ထည့်
-    sw = max(1, round(fs / 15)) if hl else 0
+    # 2) word timing ကို အသုံးချပြီး စာလုံးတစ်လုံးချင်း အရောင် ဆုံးဖြတ်
+    #    (ဒီ function မှာ unit_times ကို ရှိပြီးသား ဖြစ်ရမယ်)
+    if unit_times and len(unit_times) > 0:
+        # တစ်လုံးချင်း (char_start, char_end, start, end)
+        groups = _char_groups_for_karaoke(text, unit_times, is_mm)
+        # ဒါပေမဲ့ unit_times က တကယ့် start/end ပါပြီးသား
+        # Fallback အနေနဲ့ unit_times ကို တိုက်ရိုက် သုံး
+        groups = []
+        pos = 0
+        for w, s, e in unit_times:
+            w = w.strip()
+            if not w:
+                continue
+            idx = text.find(w, pos)
+            if idx == -1:
+                continue
+            groups.append((idx, idx + len(w), s, e))
+            pos = idx + len(w)
+    else:
+        # unit_times မရှိ -> char အလိုက် အညီအမျှ ခွဲ
+        total = len(text) or 1
+        span = max(0.05, line_end - line_start)
+        groups = []
+        pos = 0
+        for ch in text:
+            if ch.isspace():
+                groups.append((pos, pos + 1, line_start + span * pos / total,
+                               line_start + span * (pos + 1) / total))
+            else:
+                # syllable-aware
+                seg = split_syll(ch) if is_mm else [ch]
+                for s in seg:
+                    sl = len(s)
+                    groups.append((pos, pos + sl, line_start + span * pos / total,
+                                   line_start + span * (pos + sl) / total))
+                    pos += sl
+                continue
+            pos += 1
+        # bug မဖြစ်အောင် pos ကို ပြန် sync
+        if groups:
+            pos = groups[-1][1]
+
+    # စာသားကို line တစ်ကြောင်းချင်း ရိုက်၊ char အလိုက် အရောင် ပြ
     ty = box_y + pad_y
+    char_cursor = 0
+    sw = max(1, round(fs / 15))
     for ln in lines:
         lw = font.getlength(ln)
-        lx = box_x + (box_w - lw) / 2
-        if sw:
-            d.text((lx, ty), ln, font=font, fill=(0, 0, 0, 255),
+        lx = (W - lw) / 2.0
+        cur_x = lx
+        # ဒီ line ထဲက char တစ်လုံးချင်းစီ
+        for ch in ln:
+            cw = font.getlength(ch)
+            abs_start = char_cursor
+            # ဒီ char က ဘယ် group ထဲ ပါလဲ
+            sung = False
+            for gs, ge, g_start, g_end in groups:
+                if gs <= abs_start < ge:
+                    if g_start is not None and t_now >= g_start:
+                        sung = True
+                    break
+            color = sung_color if sung else unsung_color
+            # အနက်ရောင် stroke (အဝါရောင် box ပေါ်မှာ ဖတ်ရအောင်)
+            d.text((cur_x, ty), ch, font=font, fill=(0, 0, 0, 255),
                    stroke_width=sw, stroke_fill=(0, 0, 0, 255))
-        d.text((lx, ty), ln, font=font, fill=ink,
-               stroke_width=1 if bold else 0, stroke_fill=ink)
+            d.text((cur_x, ty), ch, font=font, fill=color + (255,),
+                   stroke_width=0)
+            cur_x += cw
+            char_cursor += 1
         ty += lh
 
     arr = np.array(img)
@@ -582,7 +755,7 @@ def blend_overlay(fr, ov):
 
 
 # ====================================================================
-# Neon border (ပုံသေ — လည်ပတ်ခြင်း မရှိ)
+# Neon (ပုံသေ)
 # ====================================================================
 class Neon:
     BASE = np.array([12, 8, 10], np.float32)
@@ -590,8 +763,6 @@ class Neon:
     MAGENTA = np.array([110, 30, 255], np.float32)
     IDLE = 0.14
     NBINS = 2048
-
-    # ✅ ပုံသေ head တန်ဖိုး (လည်ပတ်တဲ့ effect မလိုချင်လို့)
     STATIC_HEAD = 0.25
 
     def __init__(self, W, H, th=10, speed=0.4, tail=0.5):
@@ -603,12 +774,10 @@ class Neon:
         ys, xs = np.nonzero(ring)
         dt, db, dl, dr = ys, H - 1 - ys, xs, W - 1 - xs
         m = np.minimum.reduce([dt, db, dl, dr])
-
         S = np.where(m == dt, xs,
             np.where(m == dr, W + ys,
             np.where(m == db, 2 * W + H + (W - xs),
                      2 * W + 2 * H - ys))).astype(np.float64)
-
         self.ys, self.xs = ys, xs
         self.Sf = ((S % self.P) / float(self.P)).astype(np.float32)
         self.L = np.arange(self.NBINS, dtype=np.float32) / float(self.NBINS)
@@ -622,7 +791,6 @@ class Neon:
         return color * glow[:, None] + 255.0 * 0.9 * core[:, None]
 
     def apply(self, fr, t=0.0):
-        # ✅ t ကို လုံးဝ မသုံးတော့ဘူး — ပုံသေ head ပဲ
         head = self.STATIC_HEAD
         c = self.BASE + self._layer(head, self.CYAN) + self._layer(head + 0.5, self.MAGENTA)
         strip = np.clip(c, 0, 255).astype(np.uint8)
@@ -641,7 +809,6 @@ def zoom_flip(fr, zoom, flip):
     return fr if zoomed else fr.copy()
 
 
-# မူရင်း Video ရဲ့ အနက်ရောင်ဘောင် (Letterbox) ကို ဖြတ်ထုတ်ဖို့ Helper
 def auto_crop_video(src, dst, target_h):
     cap = cv2.VideoCapture(src)
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -650,7 +817,6 @@ def auto_crop_video(src, dst, target_h):
     cap.release()
     if not ok:
         return w, h, 0, 0
-
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     edges = cv2.Canny(gray, 30, 100)
     rows = np.where(edges.any(axis=1))[0]
@@ -677,9 +843,16 @@ def auto_crop_video(src, dst, target_h):
     return new_w, new_h, w, h
 
 
+# ====================================================================
+# Render final
+# ====================================================================
 def render_final(src, audio, out, plan, total, height, subs, font_path, fs_pct, pos_y,
                  neon_on, neon_th, neon_speed, flip, zoom, style=None, preset="ultrafast",
-                 progress=None, fps_out=30, is_mm=True, cancel=None):
+                 progress_cb=None, fps_out=30, is_mm=True, karaoke=True, cancel=None):
+    """
+    subs: [(start, end, text, word_times_or_None), ...]
+    word_times_or_None: [(word, start, end), ...] / None
+    """
     style = style or {}
 
     temp_vid = out + "_cropped.mp4"
@@ -747,7 +920,16 @@ def render_final(src, audio, out, plan, total, height, subs, font_path, fs_pct, 
     th = threading.Thread(target=producer, daemon=True)
     th.start()
 
-    k, cur_k, cur_ov, j = 0, -1, None, 0
+    k = 0
+    j = 0
+    last_sub_key = None
+    last_overlay = None
+
+    # karaoke overlay cache — (sub_index, frame_bucket) -> overlay
+    # frame_bucket ကို 30fps မှာ 1/6 စက္ကန့် (6fps) အဆင့်ဆင့် ခွဲမယ်
+    KARAOKE_FPS = 12
+    karaoke_cache = {}
+
     try:
         while True:
             fr = q.get()
@@ -756,22 +938,50 @@ def render_final(src, audio, out, plan, total, height, subs, font_path, fs_pct, 
             t = j / fps_out
             fr = zoom_flip(fr, zoom, flip)
             if neon:
-                neon.apply(fr, t)  # t ကို မသုံးတော့ — ပုံသေ
+                neon.apply(fr, t)
+
             if subs and font_path:
                 while k < len(subs) and subs[k][1] < t:
                     k += 1
                 if k < len(subs) and subs[k][0] <= t:
-                    if cur_k != k:
-                        cur_ov = build_overlay(subs[k][2], W, H, font_path, fs, pos_y,
-                                               is_mm=is_mm, **style)
-                        cur_k = k
-                    if cur_ov:
-                        blend_overlay(fr, cur_ov)
+                    sub = subs[k]
+                    sub_start, sub_end, sub_text = sub[0], sub[1], sub[2]
+                    word_times = sub[3] if len(sub) > 3 else None
+
+                    if karaoke and style.get("hl", True):
+                        # karaoke sweep — frame bucket အလိုက် overlay build
+                        bucket = int(round(t * KARAOKE_FPS))
+                        key = (k, bucket)
+                        if key not in karaoke_cache:
+                            ov = build_karaoke_overlay(
+                                sub_text, W, H, font_path, fs, pos_y,
+                                word_times, sub_start, sub_end, t,
+                                is_mm=is_mm,
+                                hl_alpha=style.get("hl_alpha", 170),
+                            )
+                            if len(karaoke_cache) > 400:
+                                karaoke_cache.clear()
+                            karaoke_cache[key] = ov
+                        ov = karaoke_cache[key]
+                        if ov is not None:
+                            blend_overlay(fr, ov)
+                    else:
+                        # ပုံမှန် overlay (karaoke မဟုတ်)
+                        if last_sub_key != k or last_overlay is None:
+                            from_style = dict(style)
+                            from_style.setdefault("hl", True)
+                            last_overlay = _build_simple_overlay(
+                                sub_text, W, H, font_path, fs, pos_y, is_mm,
+                                from_style)
+                            last_sub_key = k
+                        if last_overlay is not None:
+                            blend_overlay(fr, last_overlay)
+
             proc.stdin.write(fr.data)
             j += 1
             if j % 30 == 0:
-                if progress:
-                    progress.progress(min(j / nfr, 1.0))
+                if progress_cb:
+                    progress_cb.progress(min(j / nfr, 1.0))
                 if cancel:
                     cancel()
     except BrokenPipeError:
@@ -802,13 +1012,72 @@ def render_final(src, audio, out, plan, total, height, subs, font_path, fs_pct, 
         with open(log_path, "rb") as f:
             tail = f.read()[-800:].decode("utf-8", "ignore")
         raise RuntimeError("render: ffmpeg fail\n" + tail)
-    if progress:
-        progress.progress(1.0)
+    if progress_cb:
+        progress_cb.progress(1.0)
     return out
 
 
+def _build_simple_overlay(text, W, H, font_path, fs, pos_y, is_mm, style):
+    """karaoke မဟုတ်တဲ့ ရိုးရိုး overlay"""
+    from_style = dict(style)
+    hl = from_style.pop("hl", True)
+    hl_alpha = from_style.pop("hl_alpha", 170)
+
+    font = get_font(font_path, fs, "raqm")
+    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    pad_x, pad_y = int(fs * 0.6), int(fs * 0.5)
+    lines = wrap_text(text, font, W - 2 * pad_x, is_mm)
+    if not lines:
+        return None
+    lh = int(fs * 1.4)
+    box_h = len(lines) * lh + 2 * pad_y
+    max_y = max(0, H - box_h)
+    box_y = max(0, min(int(pos_y / 100 * max_y), max_y))
+
+    if hl:
+        d.rounded_rectangle(
+            [0, box_y, W, box_y + box_h],
+            radius=int(fs * 0.66),
+            fill=(255, 235, 0, hl_alpha),
+            outline=(255, 200, 0, min(255, hl_alpha + 40)),
+            width=max(1, fs // 20),
+        )
+    else:
+        alpha = from_style.get("alpha", 200)
+        d.rounded_rectangle(
+            [0, box_y, W, box_y + box_h],
+            radius=int(fs * 0.66),
+            fill=(0, 0, 0, alpha))
+
+    ink = (255, 255, 255, 255)
+    ty = box_y + pad_y
+    sw = max(1, round(fs / 15))
+    for ln in lines:
+        lw = font.getlength(ln)
+        lx = (W - lw) / 2.0
+        d.text((lx, ty), ln, font=font, fill=(0, 0, 0, 255),
+               stroke_width=sw, stroke_fill=(0, 0, 0, 255))
+        d.text((lx, ty), ln, font=font, fill=ink)
+        ty += lh
+
+    arr = np.array(img)
+    rows = np.where(arr[:, :, 3].any(axis=1))[0]
+    if len(rows) == 0:
+        return None
+    y0, y1 = int(rows[0]), int(rows[-1]) + 1
+    crop = arr[y0:y1]
+    a = crop[:, :, 3:4].astype(np.float32) / 255.0
+    bgr = crop[:, :, [2, 1, 0]].astype(np.float32)
+    return {"y0": y0, "y1": y1, "inv": 1.0 - a, "pre": bgr * a}
+
+
+# ====================================================================
+# Preview
+# ====================================================================
 def make_preview(path, height, text, font_path, fs_pct, pos_y, neon_on, neon_th,
-                 neon_speed, flip, zoom, style=None, is_mm=True):
+                 neon_speed, flip, zoom, style=None, is_mm=True,
+                 word_times=None, t_preview=1.0):
     temp_vid = path + "_pv.mp4"
     W, H, _, _ = auto_crop_video(path, temp_vid, height)
 
@@ -828,26 +1097,35 @@ def make_preview(path, height, text, font_path, fs_pct, pos_y, neon_on, neon_th,
     fr = cv2.resize(fr, (W, H))
     fr = zoom_flip(fr, zoom, flip)
     if neon_on:
-        Neon(W, H, neon_th, neon_speed).apply(fr, 1.0)  # ပုံသေ
+        Neon(W, H, neon_th, neon_speed).apply(fr, 1.0)
     if font_path:
-        ov = build_overlay(text, W, H, font_path, max(16, int(W * fs_pct / 100)), pos_y,
-                           is_mm=is_mm, **(style or {}))
-        if ov:
+        fs = max(16, int(W * fs_pct / 100))
+        if style and style.get("hl", True) and word_times:
+            ov = build_karaoke_overlay(
+                text, W, H, font_path, fs, pos_y,
+                word_times, 0.0, max(0.1, t_preview), t_preview,
+                is_mm=is_mm,
+                hl_alpha=style.get("hl_alpha", 170),
+            )
+        else:
+            ov = _build_simple_overlay(text, W, H, font_path, fs, pos_y, is_mm, style or {})
+        if ov is not None:
             blend_overlay(fr, ov)
     return cv2.cvtColor(fr, cv2.COLOR_BGR2RGB)
 
 
 @st.cache_data(show_spinner=False, max_entries=6)
 def cached_preview(path, fsize, height, text, font_path, fs_pct, pos_y, neon_on,
-                   neon_th, neon_speed, flip, zoom, alpha, is_mm, hl, hl_alpha):
+                   neon_th, neon_speed, flip, zoom, alpha, is_mm, hl, hl_alpha, karaoke):
     style = {"alpha": alpha, "color": (255, 235, 0), "bold": 0, "layout": "raqm",
              "hl": hl, "hl_alpha": hl_alpha}
     return make_preview(path, height, text, font_path, fs_pct, pos_y, neon_on, neon_th,
-                        neon_speed, flip, zoom, style, is_mm)
+                        neon_speed, flip, zoom, style, is_mm,
+                        word_times=None, t_preview=1.0)
 
 
 # ====================================================================
-# Manual translate helpers
+# Prompt helpers
 # ====================================================================
 def build_prompt(units, lang="မြန်မာ"):
     lines = "\n".join(f"[{i}] {u['src']}" for i, u in enumerate(units))
@@ -1017,7 +1295,7 @@ def fetch_link(url, height, bar=None, cookies_text=None):
 
 
 # ====================================================================
-# Background job targets (st.* မခေါ်ရ)
+# Job targets
 # ====================================================================
 def job_download(job, url, height, cookies):
     job["label"] = "⬇️ Video ဆွဲနေတယ်..."
@@ -1104,6 +1382,31 @@ def job_whisper(job, reg, wd, vid_path, P):
     }
 
 
+def _split_word_times(word_times, parts):
+    """
+    word_times: [(word, start, end), ...] (အသံ တစ်ခုလုံးအတွက်)
+    parts: [(part_text, part_start, part_end), ...] (စာတန်း အပိုင်းခွဲပြီး)
+    -> part တစ်ခုချင်းစီအတွက် word_times ကို ခွဲပေး
+    """
+    if not word_times:
+        return [None] * len(parts)
+    # audio timeline ကို part နဲ့ တိုက်စစ်
+    out = []
+    wi = 0
+    n = len(word_times)
+    for p_text, p_s, p_e in parts:
+        sub = []
+        while wi < n and word_times[wi][2] <= p_s + 0.001:
+            wi += 1
+        j = wi
+        while j < n and word_times[j][1] < p_e - 0.001:
+            sub.append(word_times[j])
+            j += 1
+        out.append(sub)
+        wi = j
+    return out
+
+
 def job_render(job, wd, src, units, my_list, vdur, P):
     n = len(units)
     T = {}
@@ -1116,14 +1419,21 @@ def job_render(job, wd, src, units, my_list, vdur, P):
         check_cancel(job)
         wav = f"{wd}/a{i:04d}.wav"
         keyf = f"{wd}/a{i:04d}.key"
+        marks_f = f"{wd}/a{i:04d}.marks.json"
         key = hashlib.md5(f"{sig_base}|{my_list[i]}".encode()).hexdigest()
-        if os.path.exists(wav) and os.path.exists(keyf):
+        if os.path.exists(wav) and os.path.exists(keyf) and os.path.exists(marks_f):
             try:
                 with open(keyf) as kf:
                     if kf.read().strip() == key:
-                        return i, wav_dur(wav), vox is not None
+                        with open(marks_f, encoding="utf-8") as mf:
+                            marks = json.load(mf)
+                        # stored wav duration
+                        return i, wav_dur(wav), vox is not None, marks
             except Exception:
                 pass
+
+        # TTS အသစ်
+        word_marks = []
         if vox is not None:
             raw_audio = f"{wd}/a{i:04d}_raw.wav"
             used = None
@@ -1139,23 +1449,47 @@ def job_render(job, wd, src, units, my_list, vdur, P):
                     f"VoxCPM မအောင်မြင်ပါ (စာကြောင်း #{i}): {vox.last_err}\n\n"
                     "Edge TTS ကို မသုံးထားပါ။ Space sleep/queue ဖြစ်နေနိုင်လို့ "
                     "ခဏနေပြီး ပြန်စမ်းပါ။")
+            # VoxCPM -> word boundary မရ -> syllab/word အလိုက် အနီးစပ်ဆုံး ခွဲ
+            word_marks = _approx_word_times(my_list[i], dur=0.0, is_mm=P["is_mm"])
         else:
             raw_audio = f"{wd}/a{i:04d}_raw.mp3"
             for attempt in range(4):
                 try:
-                    tts_edge(my_list[i], P["voice"], P["rate"], raw_audio, P["proxy"])
+                    word_marks = tts_edge(my_list[i], P["voice"], P["rate"], raw_audio, P["proxy"])
                     break
                 except Exception as ex:
                     if attempt == 3:
                         raise RuntimeError(
                             f"Edge TTS မအောင်မြင်ပါ (စာကြောင်း #{i}): {ex}\n\n{my_list[i]}")
                     time.sleep(1.5)
+
+        # trim + save wav
         sh(["ffmpeg", "-y", "-i", raw_audio, "-af", TRIM, "-ar", "44100", "-ac", "1", wav])
+
+        # trim ကြောင့် အချိန် ပြောင်းသွားနိုင်လို့ word_marks ကို wav duration အလိုက် scale
+        wav_d = wav_dur(wav)
+        if word_marks:
+            # မူရင်း raw audio duration
+            try:
+                raw_d = dur(raw_audio)
+            except Exception:
+                raw_d = wav_d
+            # trim က အစနဲ့ အဆုံး ဖြတ်တာမို့ ခန့်မှန်း scale (offset 0 ကနေ စတယ် လို့ ယူဆ)
+            scale = wav_d / max(raw_d, 0.01)
+            word_marks = [(w, s * scale, e * scale) for (w, s, e) in word_marks]
+
+        # VoxCPM အတွက် ခန့်မှန်း (audio duration သိပြီးမှ)
+        if not word_marks:
+            word_marks = _approx_word_times(my_list[i], dur=wav_d, is_mm=P["is_mm"])
+
+        with open(marks_f, "w", encoding="utf-8") as mf:
+            json.dump(word_marks, mf, ensure_ascii=False)
         with open(keyf, "w") as kf:
             kf.write(key)
-        return i, wav_dur(wav), vox is not None
+        return i, wav_d, vox is not None, word_marks
 
     durs = [0.0] * n
+    word_marks_list = [None] * n
     vox_ok, done = 0, 0
     workers = 1 if vox is not None else P["tts_workers"]
     t_a = time.time()
@@ -1164,8 +1498,9 @@ def job_render(job, wd, src, units, my_list, vdur, P):
         futs = [pool.submit(do_line, i) for i in range(n)]
         try:
             for fu in as_completed(futs):
-                i_, d_, u_ = fu.result()
+                i_, d_, u_, marks_ = fu.result()
                 durs[i_] = d_
+                word_marks_list[i_] = marks_
                 vox_ok += 1 if u_ else 0
                 done += 1
                 job["frac"] = 0.3 * done / n
@@ -1198,27 +1533,41 @@ def job_render(job, wd, src, units, my_list, vdur, P):
         plan.append((cum, d, s_, w_use / d))
         cum += d
 
-    subs, t0 = [], 0.0
-    if P["use_sub"]:
-        for i in range(n):
-            parts = split_for_sub(my_list[i], lang=P["voice_lang"])
-            tot = sum(len(p) for p in parts) or 1
-            cur = t0
-            for p in parts:
-                dd = durs[i] * len(p) / tot
-                subs.append((cur, cur + dd, p))
-                cur += dd
+    # စာတန်း (timeline) ကို တည်ဆောက် — word_marks ကို စာတန်း အပိုင်းအလိုက် ခွဲ
+    subs = []
+    t0 = 0.0
+    for i in range(n):
+        if not P["use_sub"]:
+            break
+        parts = split_for_sub(my_list[i], lang=P["voice_lang"])
+        if not parts:
             t0 += durs[i]
+            continue
+        # ဒီစာကြောင်းရဲ့ အစ/အဆုံး
+        line_start = t0
+        line_end = t0 + durs[i]
+        total_chars = sum(len(p) for p in parts) or 1
+        cur = line_start
+        for p in parts:
+            dd = durs[i] * len(p) / total_chars
+            p_start, p_end = cur, cur + dd
+            # word_marks ကို ဒီ part အတွက် ခွဲ
+            wt = _split_word_times(word_marks_list[i] or [], [(p, p_start, p_end)])
+            wt_part = wt[0] if wt else None
+            subs.append((p_start, p_end, p, wt_part))
+            cur += dd
+        t0 += durs[i]
 
     t_a = time.time()
-    job["label"] = "🎬 Video render (Smart Sync + စာတန်း + Neon)..."
+    job["label"] = "🎬 Video render (Smart Sync + Karaoke + Neon)..."
     job["frac"] = 0.3
     final = f"{wd}/final.mp4"
     render_final(src, allwav, final, plan, cum, P["height"], subs,
                  P["font_path"] if P["use_sub"] else None, P["sub_size"], P["sub_pos"],
                  P["use_neon"], P["neon_th"], P["neon_speed"], P["flip"], P["zoom"],
-                 P["sub_style"], preset=P["preset"], progress=JobBar(job, 0.3, 1.0),
-                 fps_out=P["fps_out"], is_mm=P["is_mm"], cancel=lambda: check_cancel(job))
+                 P["sub_style"], preset=P["preset"], progress_cb=JobBar(job, 0.3, 1.0),
+                 fps_out=P["fps_out"], is_mm=P["is_mm"], karaoke=P["karaoke"],
+                 cancel=lambda: check_cancel(job))
     T["🎬 Video render"] = time.time() - t_a
     T["⏱️ စုစုပေါင်း (အဆင့် 2)"] = time.time() - t_all
     msg = f"🎬 Render ပြီး ({cum:.1f}s / မူရင်း {vdur:.1f}s)"
@@ -1227,8 +1576,57 @@ def job_render(job, wd, src, units, my_list, vdur, P):
     job["out"] = {"final": final, "T2": T, "info": msg}
 
 
+def _approx_word_times(text, dur, is_mm=True):
+    """
+    word boundary မရတဲ့အခါ (VoxCPM) အတွက် အနီးစပ်ဆုံး အချိန်ခွဲ:
+    - မြန်မာ: syllable တစ်ခုချင်း (အက္ခရာ အရေအတွက်နဲ့ အညီအမျှ)
+    - ဂျာမန်/ဂျပန်: word / char အလိုက်
+    ပြန်ရ: [(word, start, end), ...]
+    """
+    if not text.strip():
+        return []
+    if is_mm:
+        toks = []
+        buf = ""
+        for ch in text:
+            if ch.isspace():
+                if buf:
+                    toks.append(buf)
+                    buf = ""
+                toks.append(ch)
+            else:
+                buf += ch
+        if buf:
+            toks.append(buf)
+        sub_toks = []
+        for t in toks:
+            if t.isspace():
+                sub_toks.append(t)
+            else:
+                sub_toks.extend(split_syll(t))
+    else:
+        if " " in text:
+            sub_toks = re.findall(r"\S+|\s+", text)
+        else:
+            sub_toks = list(text)
+
+    total_len = sum(len(t) for t in sub_toks) or 1
+    if dur <= 0:
+        # duration မသိရင် ကို normalize (0..1)
+        span = 1.0
+    else:
+        span = dur
+    out = []
+    cur = 0.0
+    for t in sub_toks:
+        d = span * len(t) / total_len
+        out.append((t, cur, cur + d))
+        cur += d
+    return out
+
+
 # ====================================================================
-# Session / persistence helpers
+# Persistence / session
 # ====================================================================
 def get_jid():
     jid = st.query_params.get("jid")
@@ -1442,7 +1840,7 @@ _job = reg["jobs"].get(JID)
 busy = bool(_job and _job["state"] == "running")
 
 st.title("🎙️ Recap → Multi-Language")
-st.caption("Whisper → Gemini → Edge TTS / VoxCPM → Smart Sync → PNG စာတန်း + Neon border")
+st.caption("Whisper → Gemini → Edge TTS / VoxCPM → Smart Sync → Karaoke စာတန်း + Neon border")
 
 with st.expander("⚙️ Settings", expanded=False):
     c1, c2 = st.columns(2)
@@ -1481,28 +1879,30 @@ with st.expander("🔊 ဘာသာစကား + အသံ (Voice)", expanded=T
         rate_n = st.slider("Edge speed %", -50, 100, step=5, key="rate_n")
         tts_workers = st.slider("TTS တစ်ပြိုင်နက် အရေအတွက်", 1, 10, key="tts_workers",
                                 help="များရင်မြန်တယ်။ Edge က error ပေးရင် လျှော့ပါ")
+        st.caption("ℹ️ Edge TTS က word boundary (စာလုံးတစ်လုံးချင်း အချိန်) ပေးတယ်။ "
+                   "ဒါကြောင့် karaoke sweep က တိကျမယ်။")
 
     ref_up = None
     vox_retry = st.session_state["vox_retry"]
     if is_vox:
         ref_up = st.file_uploader("🎤 Reference audio (အသံတစ်သံတည်း ဖြစ်ချင်ရင် တင်ပါ)",
                                   type=["wav", "mp3", "m4a"])
-        vox_retry = st.slider("VoxCPM ပြန်စမ်းအကြိမ် (စာကြောင်းတစ်ခုချင်း)", 1, 8, key="vox_retry",
-                              help="Space sleep/queue ဖြစ်ရင် ပြန်စမ်းမယ်။ ကုန်ရင် Edge မသုံးဘဲ error ပြမယ်")
-        st.caption("⚠️ VoxCPM က မြန်မာအသံသာ ကောင်းကောင်း ထောက်ပံ့တယ်။ "
-                   "ဂျာမနီ/ဂျပန် အတွက် Edge TTS ကို ပြောင်းသုံးပါ။")
+        vox_retry = st.slider("VoxCPM ပြန်စမ်းအကြိမ်", 1, 8, key="vox_retry")
+        st.caption("⚠️ VoxCPM က word boundary မပေးနိုင်လို့ karaoke sweep က "
+                   "approximate (စာလုံးအရေအတွက်နဲ့ အညီအမျှ ခွဲ) ဖြစ်မယ်။")
 
 rate = f"{int(rate_n):+d}%"
 is_mm = lang_conf["is_mm"]
 
-with st.expander("🎨 စာတန်း (PNG) + Neon", expanded=False):
+with st.expander("🎨 စာတန်း (PNG) + Neon + Karaoke", expanded=False):
     use_sub = st.toggle("PNG စာတန်းထည့်", key="use_sub")
+    karaoke = st.toggle("🎤 Karaoke sweep (အသံနဲ့ တစ်လုံးချင်း တစ်ထပ်တည်း)", key="karaoke",
+                        help="Edge TTS ဆိုရင် word boundary နဲ့ တိကျ။ VoxCPM ဆိုရင် approximate။")
     c5, c6 = st.columns(2)
     sub_size = c5.slider("စာအရွယ် (% of width)", 3.0, 12.0, step=0.5, key="sub_size")
     sub_pos = c6.slider("နေရာ (0=အပေါ် 100=အောက်)", 0, 100, step=1, key="sub_pos")
 
-    # ✅ အဝါရောင် highlight (ဖုံးသလို) toggle
-    sub_hl = st.toggle("🟡 စာသား နောက်ကွယ် အဝါရောင် highlight (ဖုံးသလို)", value=True,
+    sub_hl = st.toggle("🟡 စာသား နောက်ကွယ် အဝါရောင် highlight", value=True,
                        key="sub_hl")
     sub_hl_alpha = st.slider("Highlight အရောင်ရင့် (0-255)", 80, 255, 170, step=5,
                              key="sub_hl_alpha", disabled=not sub_hl)
@@ -1522,7 +1922,7 @@ with st.expander("🎨 စာတန်း (PNG) + Neon", expanded=False):
 flip = True
 sub_style = {
     "alpha": int(0.8 * 255),
-    "color": (255, 235, 0),   # ✅ အဝါရောင်
+    "color": (255, 235, 0),
     "bold": 0,
     "layout": "raqm",
     "hl": sub_hl,
@@ -1571,7 +1971,7 @@ if vid_path:
         }[voice_lang]
         pv = cached_preview(vid_path, os.path.getsize(vid_path), height, sample, font_path,
                             sub_size, sub_pos, use_neon, neon_th, neon_speed, flip, zoom,
-                            sub_style["alpha"], is_mm, sub_hl, sub_hl_alpha)
+                            sub_style["alpha"], is_mm, sub_hl, sub_hl_alpha, karaoke)
         if pv is not None:
             st.image(pv, caption=f"Preview ({voice_lang}) — အဝါရောင် highlight + Neon ပုံသေ",
                      use_container_width=True)
@@ -1579,7 +1979,7 @@ if vid_path:
         st.caption(f"preview မရ: {str(ex)[:100]}")
 
 # ====================================================================
-# Stage 1 : Whisper (background)
+# Stage 1 : Whisper
 # ====================================================================
 if st.button("1️⃣ စာသားထုတ်", type="primary", use_container_width=True, key="btn_s1",
              disabled=busy or not vid_path):
@@ -1604,8 +2004,7 @@ if st.session_state.get("units"):
 
     if st.session_state.get("manual"):
         st.subheader(f"📋 Gemini မှာ ဘာသာပြန်ရန် ({voice_lang})")
-        st.caption("① အောက်က စာသားကို Copy (ညာထောင့် icon) → ② Gemini app မှာ paste → "
-                   "③ ရလဒ်ကို အောက်က ကွက်ထဲ paste → ④ Apply")
+        st.caption("① အောက်က စာသားကို Copy → ② Gemini app မှာ paste → ③ ရလဒ်ကို အောက်က ကွက်ထဲ paste → ④ Apply")
         with st.expander("📄 Prompt (ဖွင့်ပြီး Copy ယူပါ)", expanded=False):
             st.code(build_prompt(units, voice_lang), language=None)
         pasted = st.text_area("Gemini ရလဒ် ဒီမှာ paste", height=200, key="gem_paste",
@@ -1647,6 +2046,7 @@ if st.session_state.get("units"):
                 "font_path": font_path, "sub_size": sub_size, "sub_pos": sub_pos,
                 "use_neon": use_neon, "neon_th": neon_th, "neon_speed": neon_speed,
                 "flip": flip, "zoom": zoom, "sub_style": dict(sub_style), "is_mm": is_mm,
+                "karaoke": karaoke,
             }
             st.session_state.pop("result", None)
             st.session_state.pop("t2", None)
@@ -1673,7 +2073,7 @@ if st.session_state.get("result"):
         st.caption(st.session_state["info2"])
     mb = len(st.session_state["result"]) / 1e6
     st.caption(f"📦 File အရွယ်အစား: {mb:.1f} MB")
-    if st.toggle("▶️ ဒီမှာ video ကြည့်မယ် (ဖိုင်ကြီးရင်/net နှေးရင် ကြာတတ်)", value=False, key="show_vid"):
+    if st.toggle("▶️ ဒီမှာ video ကြည့်မယ်", value=False, key="show_vid"):
         st.video(st.session_state["result"])
     _tt = {}
     _tt.update(st.session_state.get("t1") or {})
