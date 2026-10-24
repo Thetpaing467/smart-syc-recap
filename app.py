@@ -130,7 +130,7 @@ DEFAULTS = {
     "sub_pos": 90,
     "use_neon": True,
     "neon_th": 3,       # ပုံသေ ထားပြီး
-    "neon_speed": 0.4,  # ပုံသေ ထားပြီး
+    "neon_speed": 0.4,  # ပုံသေ ထားပြီး (ယခု အသုံးမပြတော့)
     "zoom": 1.0,
 }
 for _lg, _c in LANG_CONF.items():
@@ -512,8 +512,15 @@ def split_for_sub(text, mc=36, lang="မြန်မာ"):
     return parts or [text]
 
 
-def build_overlay(text, W, H, font_path, fs, pos_y, alpha=200, color=(255, 255, 255),
-                  bold=0, layout="raqm", is_mm=True):
+# --------------------------------------------------------------------
+# စာတန်း overlay (အဝါရောင် စာသား + အဝါရောင် highlight box)
+# --------------------------------------------------------------------
+def build_overlay(text, W, H, font_path, fs, pos_y, alpha=200, color=(255, 235, 0),
+                  bold=0, layout="raqm", is_mm=True, hl=True, hl_alpha=170):
+    """
+    hl=True  -> စာသား နောက်ကွယ်မှာ အဝါရောင် highlight box (ဖုံးသလို ခံစားရ)
+    hl=False -> အနက်ရောင် box သာ (မူရင်းအတိုင်း)
+    """
     font = get_font(font_path, fs, layout)
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
@@ -522,6 +529,7 @@ def build_overlay(text, W, H, font_path, fs, pos_y, alpha=200, color=(255, 255, 
     lines = wrap_text(text, font, W - 2 * pad_x, is_mm)
     if not lines:
         return None
+
     lh = int(fs * 1.4)
     box_w = W
     box_h = len(lines) * lh + 2 * pad_y
@@ -529,16 +537,30 @@ def build_overlay(text, W, H, font_path, fs, pos_y, alpha=200, color=(255, 255, 
     max_y = max(0, H - box_h)
     box_y = max(0, min(int(pos_y / 100 * max_y), max_y))
 
-    d.rounded_rectangle([box_x, box_y, box_x + box_w, box_y + box_h],
-                        radius=int(fs * 0.66), fill=(0, 0, 0, alpha))
+    if hl:
+        # အဝါရောင် highlight box (ဖုံးသလို)
+        d.rounded_rectangle(
+            [box_x, box_y, box_x + box_w, box_y + box_h],
+            radius=int(fs * 0.66),
+            fill=(255, 235, 0, hl_alpha),
+            outline=(255, 200, 0, min(255, hl_alpha + 40)),
+            width=max(1, fs // 20),
+        )
+    else:
+        d.rounded_rectangle(
+            [box_x, box_y, box_x + box_w, box_y + box_h],
+            radius=int(fs * 0.66), fill=(0, 0, 0, alpha))
+
     ink = (int(color[0]), int(color[1]), int(color[2]), 255)
-    sw = max(1, round(fs / 15))
+    # highlight box ပေါ်မှာ စာသားဖတ်ရအောင် အနက်ရောင် stroke ထည့်
+    sw = max(1, round(fs / 15)) if hl else 0
     ty = box_y + pad_y
     for ln in lines:
         lw = font.getlength(ln)
         lx = box_x + (box_w - lw) / 2
-        d.text((lx, ty), ln, font=font, fill=(0, 0, 0, 255),
-               stroke_width=sw, stroke_fill=(0, 0, 0, 255))
+        if sw:
+            d.text((lx, ty), ln, font=font, fill=(0, 0, 0, 255),
+                   stroke_width=sw, stroke_fill=(0, 0, 0, 255))
         d.text((lx, ty), ln, font=font, fill=ink,
                stroke_width=1 if bold else 0, stroke_fill=ink)
         ty += lh
@@ -560,7 +582,7 @@ def blend_overlay(fr, ov):
 
 
 # ====================================================================
-# Neon border (Video Aspect Ratio အတိုင်း လိုက်လည်စေရန် ပြင်ထားသည်)
+# Neon border (ပုံသေ — လည်ပတ်ခြင်း မရှိ)
 # ====================================================================
 class Neon:
     BASE = np.array([12, 8, 10], np.float32)
@@ -568,6 +590,9 @@ class Neon:
     MAGENTA = np.array([110, 30, 255], np.float32)
     IDLE = 0.14
     NBINS = 2048
+
+    # ✅ ပုံသေ head တန်ဖိုး (လည်ပတ်တဲ့ effect မလိုချင်လို့)
+    STATIC_HEAD = 0.25
 
     def __init__(self, W, H, th=10, speed=0.4, tail=0.5):
         self.W, self.H, self.speed, self.tail = W, H, speed, tail
@@ -578,12 +603,12 @@ class Neon:
         ys, xs = np.nonzero(ring)
         dt, db, dl, dr = ys, H - 1 - ys, xs, W - 1 - xs
         m = np.minimum.reduce([dt, db, dl, dr])
-        
+
         S = np.where(m == dt, xs,
             np.where(m == dr, W + ys,
             np.where(m == db, 2 * W + H + (W - xs),
                      2 * W + 2 * H - ys))).astype(np.float64)
-                     
+
         self.ys, self.xs = ys, xs
         self.Sf = ((S % self.P) / float(self.P)).astype(np.float32)
         self.L = np.arange(self.NBINS, dtype=np.float32) / float(self.NBINS)
@@ -596,8 +621,9 @@ class Neon:
         core = np.clip(1.0 - dist / 0.06, 0, 1) ** 2
         return color * glow[:, None] + 255.0 * 0.9 * core[:, None]
 
-    def apply(self, fr, t):
-        head = (t * self.speed) % 1.0
+    def apply(self, fr, t=0.0):
+        # ✅ t ကို လုံးဝ မသုံးတော့ဘူး — ပုံသေ head ပဲ
+        head = self.STATIC_HEAD
         c = self.BASE + self._layer(head, self.CYAN) + self._layer(head + 0.5, self.MAGENTA)
         strip = np.clip(c, 0, 255).astype(np.uint8)
         fr[self.ys, self.xs] = strip[self.idx]
@@ -624,29 +650,30 @@ def auto_crop_video(src, dst, target_h):
     cap.release()
     if not ok:
         return w, h, 0, 0
-    
-    # ဘောင် ဖြတ်ဖို့ အနက်ရောင်ကို ရှာမယ်
+
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     edges = cv2.Canny(gray, 30, 100)
     rows = np.where(edges.any(axis=1))[0]
     if len(rows) > 0:
         y0, y1 = rows[0], rows[-1] + 1
-        # အနည်းဆုံး 5px ကနေ စဖြတ်မယ်
         if y0 < 5: y0 = 0
         if h - y1 < 5: y1 = h
         cw = w
         ch = y1 - y0
-        if ch < h * 0.95: # သိသိသာသာ ဖြတ်ရမယ်ဆိုရင်
+        if ch < h * 0.95:
             scale = target_h / ch
-            new_w = int(round(cw * scale / 2) * 2) # စုံဂဏန်းဖြစ်ရမယ်
+            new_w = int(round(cw * scale / 2) * 2)
             new_h = int(target_h)
             vf = f"crop={cw}:{ch}:0:{y0},scale={new_w}:{new_h}"
-            subprocess.run(["ffmpeg", "-y", "-i", src, "-vf", vf, "-c:v", "libx264", "-preset", "ultrafast", "-crf", "26", "-c:a", "copy", dst], capture_output=True)
+            subprocess.run(["ffmpeg", "-y", "-i", src, "-vf", vf, "-c:v", "libx264",
+                            "-preset", "ultrafast", "-crf", "26", "-c:a", "copy", dst],
+                           capture_output=True)
             return new_w, new_h, cw, ch
-    # မဖြတ်ရင် ရိုးရိုး resize
     new_w = int(round(w * target_h / h / 2) * 2)
     new_h = int(target_h)
-    subprocess.run(["ffmpeg", "-y", "-i", src, "-vf", f"scale={new_w}:{new_h}", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "26", "-c:a", "copy", dst], capture_output=True)
+    subprocess.run(["ffmpeg", "-y", "-i", src, "-vf", f"scale={new_w}:{new_h}",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "26",
+                    "-c:a", "copy", dst], capture_output=True)
     return new_w, new_h, w, h
 
 
@@ -654,11 +681,10 @@ def render_final(src, audio, out, plan, total, height, subs, font_path, fs_pct, 
                  neon_on, neon_th, neon_speed, flip, zoom, style=None, preset="ultrafast",
                  progress=None, fps_out=30, is_mm=True, cancel=None):
     style = style or {}
-    
-    # ဗီဒီယိုကို အနက်ရောင်ဘောင် ဖြတ်ပြီး resize လုပ်မယ်
+
     temp_vid = out + "_cropped.mp4"
     W, H, _, _ = auto_crop_video(src, temp_vid, height)
-    
+
     cap = cv2.VideoCapture(temp_vid)
     sfps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     stotal = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 10 ** 9
@@ -730,7 +756,7 @@ def render_final(src, audio, out, plan, total, height, subs, font_path, fs_pct, 
             t = j / fps_out
             fr = zoom_flip(fr, zoom, flip)
             if neon:
-                neon.apply(fr, t)
+                neon.apply(fr, t)  # t ကို မသုံးတော့ — ပုံသေ
             if subs and font_path:
                 while k < len(subs) and subs[k][1] < t:
                     k += 1
@@ -768,10 +794,10 @@ def render_final(src, audio, out, plan, total, height, subs, font_path, fs_pct, 
         except Exception:
             pass
         log.close()
-        
+
     if os.path.exists(temp_vid):
         os.remove(temp_vid)
-        
+
     if proc.returncode != 0:
         with open(log_path, "rb") as f:
             tail = f.read()[-800:].decode("utf-8", "ignore")
@@ -785,7 +811,7 @@ def make_preview(path, height, text, font_path, fs_pct, pos_y, neon_on, neon_th,
                  neon_speed, flip, zoom, style=None, is_mm=True):
     temp_vid = path + "_pv.mp4"
     W, H, _, _ = auto_crop_video(path, temp_vid, height)
-    
+
     cap = cv2.VideoCapture(temp_vid)
     cap.set(cv2.CAP_PROP_POS_MSEC, 1000)
     ok, fr = cap.read()
@@ -795,14 +821,14 @@ def make_preview(path, height, text, font_path, fs_pct, pos_y, neon_on, neon_th,
     cap.release()
     if os.path.exists(temp_vid):
         os.remove(temp_vid)
-        
+
     if not ok:
         return None
-        
+
     fr = cv2.resize(fr, (W, H))
     fr = zoom_flip(fr, zoom, flip)
     if neon_on:
-        Neon(W, H, neon_th, neon_speed).apply(fr, 1.0)
+        Neon(W, H, neon_th, neon_speed).apply(fr, 1.0)  # ပုံသေ
     if font_path:
         ov = build_overlay(text, W, H, font_path, max(16, int(W * fs_pct / 100)), pos_y,
                            is_mm=is_mm, **(style or {}))
@@ -813,8 +839,9 @@ def make_preview(path, height, text, font_path, fs_pct, pos_y, neon_on, neon_th,
 
 @st.cache_data(show_spinner=False, max_entries=6)
 def cached_preview(path, fsize, height, text, font_path, fs_pct, pos_y, neon_on,
-                   neon_th, neon_speed, flip, zoom, alpha, is_mm):
-    style = {"alpha": alpha, "color": (255, 255, 255), "bold": 0, "layout": "raqm"}
+                   neon_th, neon_speed, flip, zoom, alpha, is_mm, hl, hl_alpha):
+    style = {"alpha": alpha, "color": (255, 235, 0), "bold": 0, "layout": "raqm",
+             "hl": hl, "hl_alpha": hl_alpha}
     return make_preview(path, height, text, font_path, fs_pct, pos_y, neon_on, neon_th,
                         neon_speed, flip, zoom, style, is_mm)
 
@@ -1473,8 +1500,14 @@ with st.expander("🎨 စာတန်း (PNG) + Neon", expanded=False):
     c5, c6 = st.columns(2)
     sub_size = c5.slider("စာအရွယ် (% of width)", 3.0, 12.0, step=0.5, key="sub_size")
     sub_pos = c6.slider("နေရာ (0=အပေါ် 100=အောက်)", 0, 100, step=1, key="sub_pos")
-    use_neon = st.toggle("Neon border", key="use_neon")
-    # ✅ Neon အထူ / Speed ကို ပုံသေ ထားတယ် (slider မပြ)
+
+    # ✅ အဝါရောင် highlight (ဖုံးသလို) toggle
+    sub_hl = st.toggle("🟡 စာသား နောက်ကွယ် အဝါရောင် highlight (ဖုံးသလို)", value=True,
+                       key="sub_hl")
+    sub_hl_alpha = st.slider("Highlight အရောင်ရင့် (0-255)", 80, 255, 170, step=5,
+                             key="sub_hl_alpha", disabled=not sub_hl)
+
+    use_neon = st.toggle("Neon border (ပုံသေ)", key="use_neon")
     neon_th = 3
     neon_speed = 0.4
     zoom = st.slider("Zoom", 1.0, 1.25, step=0.01, key="zoom")
@@ -1489,9 +1522,11 @@ with st.expander("🎨 စာတန်း (PNG) + Neon", expanded=False):
 flip = True
 sub_style = {
     "alpha": int(0.8 * 255),
-    "color": (255, 255, 255),
+    "color": (255, 235, 0),   # ✅ အဝါရောင်
     "bold": 0,
     "layout": "raqm",
+    "hl": sub_hl,
+    "hl_alpha": sub_hl_alpha,
 }
 proxy = secret("EDGE_TTS_PROXY") or None
 hf_token = secret("HF_TOKEN") or None
@@ -1522,7 +1557,6 @@ else:
     if up:
         vid_path = save_upload(up)
 
-# settings ကို မှတ်ထား (widget မပေါ်တဲ့ key တွေပါ ပြန်ရအောင်)
 for _k in DEFAULTS:
     if _k in st.session_state:
         CFG[_k] = st.session_state[_k]
@@ -1537,9 +1571,10 @@ if vid_path:
         }[voice_lang]
         pv = cached_preview(vid_path, os.path.getsize(vid_path), height, sample, font_path,
                             sub_size, sub_pos, use_neon, neon_th, neon_speed, flip, zoom,
-                            sub_style["alpha"], is_mm)
+                            sub_style["alpha"], is_mm, sub_hl, sub_hl_alpha)
         if pv is not None:
-            st.image(pv, caption=f"Preview ({voice_lang})", use_container_width=True)
+            st.image(pv, caption=f"Preview ({voice_lang}) — အဝါရောင် highlight + Neon ပုံသေ",
+                     use_container_width=True)
     except Exception as ex:
         st.caption(f"preview မရ: {str(ex)[:100]}")
 
@@ -1622,7 +1657,7 @@ if st.session_state.get("units"):
             st.rerun()
 
 # ====================================================================
-# Processing panel (ခလုတ်တွေရဲ့ အောက်မှာ ပြ)
+# Processing panel
 # ====================================================================
 if busy:
     job_panel(JID)
